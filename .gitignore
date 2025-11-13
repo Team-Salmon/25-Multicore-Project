@@ -1,52 +1,64 @@
-# Prerequisites
-*.d
+# Visual Studio IDE 관련 파일 (사용자 설정, 임시 파일)
+## Caching
+*.cache
+*.swp
+*.swo
 
-# Object files
-*.o
-*.ko
-*.obj
-*.elf
+## Visual Studio
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
 
-# Linker output
-*.ilk
-*.map
-*.exp
+# Visual Studio Code
+.vscode/
 
-# Precompiled Headers
-*.gch
-*.pch
+# 빌드 결과물 (가장 중요)
+## 빌드 출력 폴더 (Debug, Release 등)
+[Bb]in/
+[Oo]bj/
+[Rr]elease/
+[Dd]ebug/
+[Rr]eleases/
+[Dd]ebugPublic/
+x64/
+x86/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+bld/
 
-# Libraries
-*.lib
-*.a
-*.la
-*.lo
-
-# Shared objects (inc. Windows DLLs)
-*.dll
-*.so
-*.so.*
-*.dylib
-
-# Executables
-*.exe
-*.out
-*.app
-*.i*86
-*.x86_64
-*.hex
-
-# Debug files
-*.dSYM/
-*.su
-*.idb
+# 빌드 아티팩트 및 중간 파일
 *.pdb
+*.idb
+*.obj
+*.obj.enc
+*.ilk
+*.aps
+*.exp
+*.map
+*.tlog
+*.log
+*.exe
+*.exe.config
+*.dll
+*.dll.config
+*.lib
+*.msi
+*.msm
+*.msp
 
-# Kernel Module Compile Results
-*.mod*
-*.cmd
-.tmp_versions/
-modules.order
-Module.symvers
-Mkfile.old
-dkms.conf
+# NuGet 패키지
+## NuGet에서 복원해야 하는 패키지 폴더
+packages/
+*.nupkg
+*.nuget.props
+*.nuget.targets
+
+# 테스트 관련
+TestResults/
+*.trx
+
+# 기타 임시 파일
+*.tmp
+*~
