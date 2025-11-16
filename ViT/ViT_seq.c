@@ -22,17 +22,20 @@
 
 ////////////////////////////////////// ViT function //////////////////////////////////////
 
+// input : (3, 224, 224)
+// output : (768, 14, 14)
+
 void Conv2d(float* input, float* output, Network weight, Network bias) {
-    int output_size = img_size / patch_size;
+    int output_size = img_size / patch_size; // 14
 
     for (int oc = 0; oc < embed_dim; ++oc) {
         for (int oh = 0; oh < output_size; ++oh) {
             for (int ow = 0; ow < output_size; ++ow) {
                 float sum = bias.data[oc];
 
-                for (int ic = 0; ic < in_chans; ++ic) {
-                    for (int kh = 0; kh < patch_size; ++kh) {
-                        for (int kw = 0; kw < patch_size; ++kw) {
+				for (int ic = 0; ic < in_chans; ++ic) { // 0 to 2
+					for (int kh = 0; kh < patch_size; ++kh) { // 0 to 15
+						for (int kw = 0; kw < patch_size; ++kw) { // 0 to 15
                             int ih = oh * patch_size + kh;
                             int iw = ow * patch_size + kw;
                             int input_idx = (ic * img_size + ih) * img_size + iw;
@@ -48,6 +51,9 @@ void Conv2d(float* input, float* output, Network weight, Network bias) {
         }
     }
 }
+
+// input : (768, 14, 14)
+// output : (num_patches, embed_dim) -> (196, 768)
 
 void flatten_transpose(float* input, float* output) {
     int output_size = img_size / patch_size;
@@ -340,12 +346,13 @@ const int enc_size = embed_dim * ((img_size / patch_size) * (img_size / patch_si
 ////////////////////////////////////// Model Architecture //////////////////////////////////////
 void ViT_seq(ImageData* image, Network* networks, float** probabilities) {
 
-    int token_size = ((img_size / patch_size) * (img_size / patch_size) + 1);
+    int token_size = ((img_size / patch_size) * (img_size / patch_size) + 1); // 197
     float* layer[4];
     float* enc_layer[12];
     float* enc_output;
-    int  hidden_dim = ((int)(embed_dim * mlp_ratio));
-    //printf("%d %d = %d\n", token_size, hidden_dim, token_size * hidden_dim);
+	int  hidden_dim = ((int)(embed_dim * mlp_ratio)); // 3072
+    
+    // printf("%d %d = %d\n", token_size, hidden_dim, token_size * hidden_dim);
 
     for (int i = 0; i < 4; i++) {
         layer[i] = (float*)malloc(sizeof(float) * size[i]);
