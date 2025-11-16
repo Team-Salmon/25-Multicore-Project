@@ -62,3 +62,4 @@ TestResults/
 # 기타 임시 파일
 *.tmp
 *~
+ViT/Data/opencl_result.txt
