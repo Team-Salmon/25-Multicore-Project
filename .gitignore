@@ -63,3 +63,4 @@ TestResults/
 *.tmp
 *~
 ViT/Data/opencl_result.txt
+ViT/local.props
