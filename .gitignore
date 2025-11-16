@@ -64,3 +64,4 @@ TestResults/
 *~
 ViT/Data/opencl_result.txt
 ViT/local.props
+ViT/release.props
