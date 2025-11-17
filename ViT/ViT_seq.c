@@ -435,13 +435,19 @@ void ViT_seq(ImageData* image, Network* networks, float** probabilities) {
 
         layer_norm(enc_layer[11], enc_output, networks[148], networks[149]);
 
-        /* Token 값 추출 */
+        /* Token */
         float* cls_token = (float*)malloc(sizeof(float) * embed_dim);
         float* cls_output = (float*)malloc(sizeof(float) * num_classes);
         memcpy(cls_token, enc_output, sizeof(float) * embed_dim);
 
         linear_layer(cls_token, cls_output, 1, embed_dim, num_classes, networks[150], networks[151]);
-        /* 확률분포 추출 */
+        /* Softmax */
         Softmax(cls_output, probabilities[i], num_classes);
     }
+}
+
+void ViT_seq_opencl(ImageData* image, Network* networks, float** probabilities) {
+	// OpenCL implementation
+
+
 }
