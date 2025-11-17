@@ -1,4 +1,4 @@
-﻿[0] label: 65 / prob: 0.919345
+[0] label: 65 / prob: 0.919345
 [1] label: 795 / prob: 0.824735
 [2] label: 230 / prob: 0.685105
 [3] label: 809 / prob: 0.833920

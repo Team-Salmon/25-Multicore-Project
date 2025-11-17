@@ -249,16 +249,37 @@ static void gelu_activation(float* input, float* output, int size) {
 }
 
 static void linear_layer(float* input, float* output, int tokens, int in_features, int out_features, Network weight, Network bias) {
-    for (int t = 0; t < tokens; t++) {
-        for (int o = 0; o < out_features; o++) {
-            float sum = bias.data[o];
-            for (int i = 0; i < in_features; i++) {
-                sum += input[t * in_features + i] * weight.data[o * in_features + i];
-            }
-            output[t * out_features + o] = sum;
-        }
-    }
+    cl_int err;
+
+	cl_kernel kernel = clCreateKernel(ctx.program, "linear_layer", &err); CHECK_ERROR(err);
+
+    cl_mem input_buf = clCreateBuffer(ctx.context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, sizeof(float) * tokens * in_features, input, &err); CHECK_ERROR(err);
+    cl_mem output_buf = clCreateBuffer(ctx.context, CL_MEM_WRITE_ONLY, sizeof(float) * tokens * out_features, NULL, &err); CHECK_ERROR(err);
+    cl_mem weight_buf = clCreateBuffer(ctx.context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, sizeof(float) * in_features * out_features, weight.data, &err); CHECK_ERROR(err);
+    cl_mem bias_buf = clCreateBuffer(ctx.context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, sizeof(float) * out_features, bias.data, &err); CHECK_ERROR(err);
+
+	err = clSetKernelArg(kernel, 0, sizeof(cl_mem), &input_buf); CHECK_ERROR(err);
+	err = clSetKernelArg(kernel, 1, sizeof(cl_mem), &output_buf); CHECK_ERROR(err);
+	err = clSetKernelArg(kernel, 2, sizeof(cl_mem), &weight_buf); CHECK_ERROR(err);
+	err = clSetKernelArg(kernel, 3, sizeof(cl_mem), &bias_buf); CHECK_ERROR(err);
+	err = clSetKernelArg(kernel, 4, sizeof(int), &tokens); CHECK_ERROR(err);
+	err = clSetKernelArg(kernel, 5, sizeof(int), &in_features); CHECK_ERROR(err);
+	err = clSetKernelArg(kernel, 6, sizeof(int), &out_features); CHECK_ERROR(err);
+
+	size_t global_work_size[2] = { (size_t)tokens, (size_t)out_features };
+
+	err = clEnqueueNDRangeKernel(ctx.queue, kernel, 2, NULL, global_work_size, NULL, 0, NULL, NULL); CHECK_ERROR(err);
+	err = clFinish(ctx.queue); CHECK_ERROR(err);
+	err = clEnqueueReadBuffer(ctx.queue, output_buf, CL_TRUE, 0, sizeof(float) * tokens * out_features, output, 0, NULL, NULL); CHECK_ERROR(err);
+
+	clReleaseMemObject(input_buf);
+	clReleaseMemObject(output_buf);
+	clReleaseMemObject(weight_buf);
+	clReleaseMemObject(bias_buf);
+
+	clReleaseKernel(kernel);
 }
+
 static void mlp_block(float* input, float* output, Network fc1_weight, Network fc1_bias, Network fc2_weight, Network fc2_bias) {
     int tokens = ((img_size / patch_size) * (img_size / patch_size)) + 1; //197
     int Embed_dim = embed_dim; //768
@@ -364,12 +385,12 @@ void ViT_seq_sb(ImageData* image, Network* networks, float** probabilities) {
     CHECK_ERROR(err);
 
     size_t kernel_source_size;
-    char* kernel_source = get_source_code("kernel.cl", &kernel_source_size);
-    cl_program program = clCreateProgramWithSource(ctx.context, 1, (const char**)&kernel_source, &kernel_source_size, &err);
+    char* kernel_source = get_source_code("kernel_sb.cl", &kernel_source_size);
+    ctx.program = clCreateProgramWithSource(ctx.context, 1, (const char**)&kernel_source, &kernel_source_size, &err);
     CHECK_ERROR(err);
 
-    err = clBuildProgram(program, 1, &ctx.device, "", NULL, NULL);
-    build_error(program, ctx.device, err);
+    err = clBuildProgram(ctx.program, 1, &ctx.device, "", NULL, NULL);
+    build_error(ctx.program, ctx.device, err);
     CHECK_ERROR(err);
 
     // below : kernel creation, buffer allocation, data transfer, kernel execution, result retrieval, cleanup //////////////
@@ -481,5 +502,5 @@ void ViT_seq_sb(ImageData* image, Network* networks, float** probabilities) {
     free(kernel_source);
     clReleaseCommandQueue(ctx.queue);
     clReleaseContext(ctx.context);
-    clReleaseProgram(program);
+    clReleaseProgram(ctx.program);
 }

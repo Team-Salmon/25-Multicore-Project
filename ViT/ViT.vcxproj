@@ -150,7 +150,9 @@
     <ClInclude Include="ViT_seq.h" />
   </ItemGroup>
   <ItemGroup>
-    <None Include="kernel.cl" />
+    <None Include="kernel_sb.cl" />
+    <None Include="kernel_seoh.cl" />
+    <None Include="kernel_ZZani.cl" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
