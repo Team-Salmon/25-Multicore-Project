@@ -133,6 +133,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="comparator.c" />
+    <ClCompile Include="debug.c" />
     <ClCompile Include="dirent.c" />
     <ClCompile Include="Main.c" />
     <ClCompile Include="Network.c" />
@@ -140,6 +141,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="comparator.h" />
+    <ClInclude Include="debug.h" />
     <ClInclude Include="dirent.h" />
     <ClInclude Include="Network.h" />
     <ClInclude Include="ViT_seq.h" />

@@ -6,6 +6,7 @@
 #include <math.h>
 #include <time.h>
 #include "Network.h"
+#include "debug.h"
 #include "ViT_seq.h"
 #define img_size 224
 #define patch_size 16
@@ -514,6 +515,14 @@ void ViT_seq_opencl(ImageData* image, Network* networks, float** probabilities) 
     build_error(program, device, err);
     CHECK_ERROR(err);
 
-	// below : kernel creation, buffer allocation, data transfer, kernel execution, result retrieval, cleanup
+	// below : kernel creation, buffer allocation, data transfer, kernel execution, result retrieval, cleanup //////////////
 
+    
+
+    ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+	free(kernel_source);
+	clReleaseCommandQueue(queue);
+	clReleaseContext(context);
+	clReleaseProgram(program);
 }

@@ -46,7 +46,10 @@ int main() {
     printf("=====================Start========================\n");
     start = clock();
     // Input here - 병렬처리 함수 작성
-    ViT_seq(images, network, probabilities);
+    // ViT_seq(images, network, probabilities);
+   
+	ViT_seq_opencl(images, network, probabilities);
+    
     //
     end = clock();
     printf("Elapsed time: %.2f sec\n", (double)(end - start) / CLK_TCK);
