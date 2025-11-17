@@ -1,4 +1,4 @@
-#include <stdio.h>
+ï»¿#include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
@@ -45,7 +45,7 @@ int main() {
 
     printf("=====================Start========================\n");
     start = clock();
-    // Input here - º´·ÄÃ³¸® ÇÔ¼ö ÀÛ¼º
+    // Input here - ë³‘ë ¬ì²˜ë¦¬ í•¨ìˆ˜ ì‘ì„±
     // ViT_seq(images, network, probabilities);
    
 	ViT_seq_opencl(images, network, probabilities);
@@ -69,13 +69,13 @@ int main() {
 
     int cmp = comparator();
     if (cmp == 0) {
-        printf("Comparator: µÎ ÆÄÀÏÀÇ ³»¿ëÀÌ µ¿ÀÏÇÕ´Ï´Ù.\n");
+        printf("Comparator: ë‘ íŒŒì¼ì˜ ë‚´ìš©ì´ ë™ì¼í•©ë‹ˆë‹¤.\n");
     }
     else if (cmp > 0) {
-        printf("Comparator: µÎ ÆÄÀÏÀÇ ³»¿ë¿¡ %d°³ÀÇ Â÷ÀÌ°¡ ÀÖ½À´Ï´Ù.\n", cmp);
+        printf("Comparator: ë‘ íŒŒì¼ì˜ ë‚´ìš©ì— %dê°œì˜ ì°¨ì´ê°€ ìˆìŠµë‹ˆë‹¤.\n", cmp);
     }
     else { 
-        printf("Comparator: ÆÄÀÏ ºñ±³ µµÁß ¿À·ù°¡ ¹ß»ıÇß½À´Ï´Ù.\n");
+        printf("Comparator: íŒŒì¼ ë¹„êµ ë„ì¤‘ ì˜¤ë¥˜ê°€ ë°œìƒí–ˆìŠµë‹ˆë‹¤.\n");
     }
     return 0;
 }

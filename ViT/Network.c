@@ -1,41 +1,41 @@
-#include <stdio.h>
+ï»¿#include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
 #include "dirent.h"
-#include <math.h>  // roundf ÇÔ¼ö¸¦ »ç¿ëÇÏ±â À§ÇØ Ãß°¡
+#include <math.h>  // roundf í•¨ìˆ˜ë¥¼ ì‚¬ìš©í•˜ê¸° ìœ„í•´ ì¶”ê°€
 
-// ÀÌ¹ÌÁö µ¥ÀÌÅÍ Á¤º¸¸¦ ´ãÀ» ±¸Á¶Ã¼ Á¤ÀÇ
+// ì´ë¯¸ì§€ ë°ì´í„° ì •ë³´ë¥¼ ë‹´ì„ êµ¬ì¡°ì²´ ì •ì˜
 typedef struct {
-    int n;      // ÀÌ¹ÌÁö °³¼ö
-    int c;      // Ã¤³Î ¼ö
-    int h;      // ³ôÀÌ
-    int w;      // ³Êºñ
-    float* data; // ¸ğµç ÀÌ¹ÌÁö µ¥ÀÌÅÍ¸¦ ¿¬¼ÓµÈ ¸Ş¸ğ¸® °ø°£¿¡ ÀúÀå (N x C x H x W)
+    int n;      // ì´ë¯¸ì§€ ê°œìˆ˜
+    int c;      // ì±„ë„ ìˆ˜
+    int h;      // ë†’ì´
+    int w;      // ë„ˆë¹„
+    float* data; // ëª¨ë“  ì´ë¯¸ì§€ ë°ì´í„°ë¥¼ ì—°ì†ëœ ë©”ëª¨ë¦¬ ê³µê°„ì— ì €ì¥ (N x C x H x W)
 } ImageData;
 
 typedef struct {
     float* data;
-    size_t size;   // float ¿ø¼Ò °³¼ö
+    size_t size;   // float ì›ì†Œ ê°œìˆ˜
 } Network;
 
-// input.bin ÆÄÀÏÀÇ Çì´õ´Â 4°³ÀÇ int32: (n, c, h, w)
-// ÀÌÈÄ float32 µ¥ÀÌÅÍ°¡ ¿¬¼ÓÇØ¼­ ÀúÀåµÇ¾î ÀÖ´Ù°í °¡Á¤ÇÕ´Ï´Ù.
+// input.bin íŒŒì¼ì˜ í—¤ë”ëŠ” 4ê°œì˜ int32: (n, c, h, w)
+// ì´í›„ float32 ë°ì´í„°ê°€ ì—°ì†í•´ì„œ ì €ì¥ë˜ì–´ ìˆë‹¤ê³  ê°€ì •í•©ë‹ˆë‹¤.
 ImageData* load_image_data(const char* filename) {
     FILE* f = NULL;
     errno_t err = fopen_s(&f, filename, "rb");
     if (err != 0) {
-        // ¿¡·¯ Ã³¸®: ÆÄÀÏ ¿­±â¿¡ ½ÇÆĞÇÑ °æ¿ì
+        // ì—ëŸ¬ ì²˜ë¦¬: íŒŒì¼ ì—´ê¸°ì— ì‹¤íŒ¨í•œ ê²½ìš°
     }
     if (f == NULL) {
-        perror("ÆÄÀÏ ¿­±â ½ÇÆĞ");
+        perror("íŒŒì¼ ì—´ê¸° ì‹¤íŒ¨");
         return NULL;
     }
 
-    // Çì´õ ÀĞ±â: n, c, h, w
+    // í—¤ë” ì½ê¸°: n, c, h, w
     int header[4];
     if (fread(header, sizeof(int), 4, f) != 4) {
-        perror("Çì´õ ÀĞ±â ½ÇÆĞ");
+        perror("í—¤ë” ì½ê¸° ì‹¤íŒ¨");
         fclose(f);
         return NULL;
     }
@@ -48,39 +48,39 @@ ImageData* load_image_data(const char* filename) {
     //printf("%d * %d * %d = %d!!\n", c, h, w, image_size);
     int total_elements = n * image_size;
 
-    // ¸ğµç ÀÌ¹ÌÁö µ¥ÀÌÅÍ¸¦ ÇÑ ¹ø¿¡ ÀĞ¾î µéÀÏ ÀÓ½Ã ¹öÆÛ ÇÒ´ç
+    // ëª¨ë“  ì´ë¯¸ì§€ ë°ì´í„°ë¥¼ í•œ ë²ˆì— ì½ì–´ ë“¤ì¼ ì„ì‹œ ë²„í¼ í• ë‹¹
     float* all_data = (float*)malloc(total_elements * sizeof(float));
     if (all_data == NULL) {
-        perror("ÀüÃ¼ µ¥ÀÌÅÍ ¹öÆÛ ¸Ş¸ğ¸® ÇÒ´ç ½ÇÆĞ");
+        perror("ì „ì²´ ë°ì´í„° ë²„í¼ ë©”ëª¨ë¦¬ í• ë‹¹ ì‹¤íŒ¨");
         fclose(f);
         return NULL;
     }
     if (fread(all_data, sizeof(float), total_elements, f) != total_elements) {
-        perror("ÀÌ¹ÌÁö µ¥ÀÌÅÍ ÀĞ±â ½ÇÆĞ");
+        perror("ì´ë¯¸ì§€ ë°ì´í„° ì½ê¸° ì‹¤íŒ¨");
         free(all_data);
         fclose(f);
         return NULL;
     }
     fclose(f);
 
-    // ÀÌ¹ÌÁö °³¼ö¸¸Å­ÀÇ ImageData ¹è¿­ ÇÒ´ç
+    // ì´ë¯¸ì§€ ê°œìˆ˜ë§Œí¼ì˜ ImageData ë°°ì—´ í• ë‹¹
     ImageData* images = (ImageData*)malloc(n * sizeof(ImageData));
     if (images == NULL) {
-        perror("ImageData ¹è¿­ ¸Ş¸ğ¸® ÇÒ´ç ½ÇÆĞ");
+        perror("ImageData ë°°ì—´ ë©”ëª¨ë¦¬ í• ë‹¹ ì‹¤íŒ¨");
         free(all_data);
         return NULL;
     }
 
-    // °¢ ÀÌ¹ÌÁöº°·Î ¸ŞÅ¸Á¤º¸¸¦ ¼³Á¤ÇÏ°í, µ¥ÀÌÅÍ´Â º°µµÀÇ ¸Ş¸ğ¸® ¿µ¿ª¿¡ º¹»ç
+    // ê° ì´ë¯¸ì§€ë³„ë¡œ ë©”íƒ€ì •ë³´ë¥¼ ì„¤ì •í•˜ê³ , ë°ì´í„°ëŠ” ë³„ë„ì˜ ë©”ëª¨ë¦¬ ì˜ì—­ì— ë³µì‚¬
     for (int i = 0; i < n; i++) {
-        images[i].n = n;  // ÀüÃ¼ ÀÌ¹ÌÁö °³¼ö¸¦ ÀúÀå (ÆíÀÇ¸¦ À§ÇØ °¢ ±¸Á¶Ã¼¿¡ µ¿ÀÏÇÏ°Ô ÀúÀå)
+        images[i].n = n;  // ì „ì²´ ì´ë¯¸ì§€ ê°œìˆ˜ë¥¼ ì €ì¥ (í¸ì˜ë¥¼ ìœ„í•´ ê° êµ¬ì¡°ì²´ì— ë™ì¼í•˜ê²Œ ì €ì¥)
         images[i].c = c;
         images[i].h = h;
         images[i].w = w;
         images[i].data = (float*)malloc(image_size * sizeof(float));
         if (images[i].data == NULL) {
-            perror("°³º° ÀÌ¹ÌÁö µ¥ÀÌÅÍ ¸Ş¸ğ¸® ÇÒ´ç ½ÇÆĞ");
-            // ¿¡·¯ ¹ß»ı ½Ã ÀÌÀü¿¡ ÇÒ´çÇÑ ¸Ş¸ğ¸® ÇØÁ¦
+            perror("ê°œë³„ ì´ë¯¸ì§€ ë°ì´í„° ë©”ëª¨ë¦¬ í• ë‹¹ ì‹¤íŒ¨");
+            // ì—ëŸ¬ ë°œìƒ ì‹œ ì´ì „ì— í• ë‹¹í•œ ë©”ëª¨ë¦¬ í•´ì œ
             for (int j = 0; j < i; j++) {
                 free(images[j].data);
             }
@@ -88,7 +88,7 @@ ImageData* load_image_data(const char* filename) {
             free(all_data);
             return NULL;
         }
-        // ¸ğµç ÀÌ¹ÌÁö µ¥ÀÌÅÍ°¡ ¿¬¼ÓÀ¸·Î ÀúÀåµÇ¾î ÀÖÀ¸¹Ç·Î, i¹øÂ° ÀÌ¹ÌÁö µ¥ÀÌÅÍ¸¦ º¹»ç
+        // ëª¨ë“  ì´ë¯¸ì§€ ë°ì´í„°ê°€ ì—°ì†ìœ¼ë¡œ ì €ì¥ë˜ì–´ ìˆìœ¼ë¯€ë¡œ, ië²ˆì§¸ ì´ë¯¸ì§€ ë°ì´í„°ë¥¼ ë³µì‚¬
         memcpy(images[i].data, all_data + i * image_size, image_size * sizeof(float));
     }
 
@@ -97,11 +97,11 @@ ImageData* load_image_data(const char* filename) {
 }
 
 static int parse_index_from_filename(const char* filename) {
-    // filenameÀÌ "Weight_"·Î ½ÃÀÛÇÏ´ÂÁö È®ÀÎ
+    // filenameì´ "Weight_"ë¡œ ì‹œì‘í•˜ëŠ”ì§€ í™•ì¸
     if (strncmp(filename, "Weight_", 7) != 0) {
         return -1;
     }
-    // "Weight_" ÀÌÈÄºÎÅÍ '_' ¹®ÀÚ°¡ ³ª¿Ã ¶§±îÁöÀÇ ¹®ÀÚ¿­ ÃßÃâ
+    // "Weight_" ì´í›„ë¶€í„° '_' ë¬¸ìê°€ ë‚˜ì˜¬ ë•Œê¹Œì§€ì˜ ë¬¸ìì—´ ì¶”ì¶œ
     const char* start = filename + 7;
     const char* end = strchr(start, '_');
     if (!end) {
@@ -119,11 +119,11 @@ static int parse_index_from_filename(const char* filename) {
 void load_weights(const char* directory, Network network[], int count) {
     DIR* dir = opendir(directory);
     if (!dir) {
-        perror("µğ·ºÅä¸® ¿­±â ½ÇÆĞ");
+        perror("ë””ë ‰í† ë¦¬ ì—´ê¸° ì‹¤íŒ¨");
         exit(EXIT_FAILURE);
     }
 
-    // network ¹è¿­ ÃÊ±âÈ­
+    // network ë°°ì—´ ì´ˆê¸°í™”
     for (int i = 0; i < count; i++) {
         network[i].data = NULL;
         network[i].size = 0;
@@ -131,10 +131,10 @@ void load_weights(const char* directory, Network network[], int count) {
 
     struct dirent* entry;
     while ((entry = readdir(dir)) != NULL) {
-        // ÆÄÀÏ¸íÀÌ "Weight_"·Î ½ÃÀÛÇÏ´ÂÁö È®ÀÎ
+        // íŒŒì¼ëª…ì´ "Weight_"ë¡œ ì‹œì‘í•˜ëŠ”ì§€ í™•ì¸
         if (strncmp(entry->d_name, "Weight_", 7) != 0)
             continue;
-        // È®ÀåÀÚ°¡ ".bin"ÀÎÁö È®ÀÎ
+        // í™•ì¥ìê°€ ".bin"ì¸ì§€ í™•ì¸
         const char* ext = strrchr(entry->d_name, '.');
         if (!ext || strcmp(ext, ".bin") != 0)
             continue;
@@ -143,18 +143,18 @@ void load_weights(const char* directory, Network network[], int count) {
         if (idx < 0 || idx >= count)
             continue;
 
-        // ÀüÃ¼ °æ·Î »ı¼º: ¿¹) "./Network/Weight_96_encoder_layers_encoder_layer_7_mlp_0_weight.bin"
+        // ì „ì²´ ê²½ë¡œ ìƒì„±: ì˜ˆ) "./Network/Weight_96_encoder_layers_encoder_layer_7_mlp_0_weight.bin"
         char filepath[512];
         snprintf(filepath, sizeof(filepath), "%s/%s", directory, entry->d_name);
 
-        // ÆÄÀÏÀ» ¹ÙÀÌ³Ê¸® ÀĞ±â ¸ğµå·Î ¿­±â
+        // íŒŒì¼ì„ ë°”ì´ë„ˆë¦¬ ì½ê¸° ëª¨ë“œë¡œ ì—´ê¸°
         FILE* fp = NULL;
         errno_t err = fopen_s(&fp, filepath, "rb");
         if (err != 0) {
-            // ¿¡·¯ Ã³¸®: ÆÄÀÏ ¿­±â¿¡ ½ÇÆĞÇÑ °æ¿ì
+            // ì—ëŸ¬ ì²˜ë¦¬: íŒŒì¼ ì—´ê¸°ì— ì‹¤íŒ¨í•œ ê²½ìš°
         }
 
-        // ÆÄÀÏ Å©±â È®ÀÎ (¹ÙÀÌÆ® ´ÜÀ§)
+        // íŒŒì¼ í¬ê¸° í™•ì¸ (ë°”ì´íŠ¸ ë‹¨ìœ„)
         fseek(fp, 0, SEEK_END);
         long file_size = ftell(fp);
         rewind(fp);
@@ -162,31 +162,31 @@ void load_weights(const char* directory, Network network[], int count) {
             fclose(fp);
             continue;
         }
-        // ÆÄÀÏÀÌ float ¹è¿­ÀÌ¶ó°í °¡Á¤ÇÏ¹Ç·Î float ¿ø¼Ò °³¼ö °è»ê
+        // íŒŒì¼ì´ float ë°°ì—´ì´ë¼ê³  ê°€ì •í•˜ë¯€ë¡œ float ì›ì†Œ ê°œìˆ˜ ê³„ì‚°
         size_t num_floats = file_size / sizeof(float);
 
-        // float ¹è¿­À» ÀúÀåÇÒ ¸Ş¸ğ¸® ÇÒ´ç
+        // float ë°°ì—´ì„ ì €ì¥í•  ë©”ëª¨ë¦¬ í• ë‹¹
         float* buffer = (float*)malloc(file_size);
         if (!buffer) {
-            perror("¸Ş¸ğ¸® ÇÒ´ç ½ÇÆĞ");
+            perror("ë©”ëª¨ë¦¬ í• ë‹¹ ì‹¤íŒ¨");
             fclose(fp);
             exit(EXIT_FAILURE);
         }
         size_t read_size = fread(buffer, sizeof(float), num_floats, fp);
         if (read_size != num_floats) {
-            perror("ÆÄÀÏ ÀĞ±â ¿À·ù");
+            perror("íŒŒì¼ ì½ê¸° ì˜¤ë¥˜");
             free(buffer);
             fclose(fp);
             continue;
         }
         fclose(fp);
 
-        // °¢ float °ªÀ» ¼Ò¼öÁ¡ 6ÀÚ¸®±îÁö ¹İ¿Ã¸²
+        // ê° float ê°’ì„ ì†Œìˆ˜ì  6ìë¦¬ê¹Œì§€ ë°˜ì˜¬ë¦¼
         for (size_t i = 0; i < num_floats; i++) {
             buffer[i] = roundf(buffer[i] * 1000000.0f) / 1000000.0f;
         }
 
-        // ÀÎµ¦½º¿¡ ÇØ´çÇÏ´Â À§Ä¡¿¡ µ¥ÀÌÅÍ¿Í Å©±â¸¦ ÀúÀå
+        // ì¸ë±ìŠ¤ì— í•´ë‹¹í•˜ëŠ” ìœ„ì¹˜ì— ë°ì´í„°ì™€ í¬ê¸°ë¥¼ ì €ì¥
         network[idx].data = buffer;
         network[idx].size = num_floats;
     }
