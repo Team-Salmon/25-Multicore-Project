@@ -312,9 +312,7 @@ void Encoder(float* input, float* output,
     layer_norm(residual, ln2_out, ln2_w, ln2_b);
 
     /*MLP*/
-    start_timer();
     mlp_block(ln2_out, mlp_out, mlp1_w, mlp1_b, mlp2_w, mlp2_b);
-    stop_timer("MLP Time");
 
     /*Residual2*/
     for (int i = 0; i < tokens * embed_dim; i++) {
@@ -541,7 +539,6 @@ void ViT_seq_opencl(ImageData* image, Network* networks, float** probabilities) 
     enc_output = (float*)malloc(sizeof(float) * enc_size);
 
     for (int i = 0; i < image->n; i++) {
-		printf("Processing image %d/%d\n", i + 1, image->n);
 
         /*patch embedding*/
         Conv2d(image[i].data, layer[0], networks[1], networks[2]);
@@ -552,7 +549,6 @@ void ViT_seq_opencl(ImageData* image, Network* networks, float** probabilities) 
         /*position embedding*/
         pos_emb(layer[2], layer[3], networks[3]);
 
-		printf("-- Starting Encoder --\n");
         /*Encoder - 12 Layers*/
         Encoder(layer[3], enc_layer[0],
             networks[4], networks[5], networks[6], networks[7],
