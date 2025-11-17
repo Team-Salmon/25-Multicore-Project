@@ -21,6 +21,16 @@
 #define drop_path_rate 0.0
 #define eps 1e-6
 
+typedef struct {
+    cl_platform_id platform;
+    cl_device_id device;
+    cl_context context;
+    cl_command_queue queue;
+    cl_program program;
+} CLContext;
+
+CLContext ctx = { 0 };
+
 ////////////////////////////////////// ViT function //////////////////////////////////////
 
 // input : (3, 224, 224)
@@ -302,7 +312,9 @@ void Encoder(float* input, float* output,
     layer_norm(residual, ln2_out, ln2_w, ln2_b);
 
     /*MLP*/
+    start_timer();
     mlp_block(ln2_out, mlp_out, mlp1_w, mlp1_b, mlp2_w, mlp2_b);
+    stop_timer("MLP Time");
 
     /*Residual2*/
     for (int i = 0; i < tokens * embed_dim; i++) {
@@ -489,30 +501,25 @@ void build_error(cl_program program, cl_device_id device, cl_int err) {
 void ViT_seq_opencl(ImageData* image, Network* networks, float** probabilities) {
     cl_int err;
 
-    cl_platform_id platform;
-    cl_device_id device;
-    cl_context context;
-    cl_command_queue queue;
-
-    err = clGetPlatformIDs(1, &platform, NULL);
+    err = clGetPlatformIDs(1, &ctx.platform, NULL);
     CHECK_ERROR(err);
 
-    err = clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, 1, &device, NULL);
+    err = clGetDeviceIDs(ctx.platform, CL_DEVICE_TYPE_GPU, 1, &ctx.device, NULL);
     CHECK_ERROR(err);
 
-    context = clCreateContext(NULL, 1, &device, NULL, NULL, &err);
+    ctx.context = clCreateContext(NULL, 1, &ctx.device, NULL, NULL, &err);
     CHECK_ERROR(err);
 
-    queue = clCreateCommandQueueWithProperties(context, device, 0, &err);
+    ctx.queue = clCreateCommandQueueWithProperties(ctx.context, ctx.device, 0, &err);
     CHECK_ERROR(err);
 
     size_t kernel_source_size;
     char* kernel_source = get_source_code("kernel.cl", &kernel_source_size);
-    cl_program program = clCreateProgramWithSource(context, 1, (const char**)&kernel_source, &kernel_source_size, &err);
+    cl_program program = clCreateProgramWithSource(ctx.context, 1, (const char**)&kernel_source, &kernel_source_size, &err);
     CHECK_ERROR(err);
 
-    err = clBuildProgram(program, 1, &device, "", NULL, NULL);
-    build_error(program, device, err);
+    err = clBuildProgram(program, 1, &ctx.device, "", NULL, NULL);
+    build_error(program, ctx.device, err);
     CHECK_ERROR(err);
 
 	// below : kernel creation, buffer allocation, data transfer, kernel execution, result retrieval, cleanup //////////////
@@ -521,7 +528,7 @@ void ViT_seq_opencl(ImageData* image, Network* networks, float** probabilities) 
     float* layer[4];
     float* enc_layer[12];
     float* enc_output;
-    int  hidden_dim = ((int)(embed_dim * mlp_ratio)); // 3072
+	int hidden_dim = ((int)(embed_dim * mlp_ratio)); // 3072
 
     // printf("%d %d = %d\n", token_size, hidden_dim, token_size * hidden_dim);
 
@@ -534,6 +541,8 @@ void ViT_seq_opencl(ImageData* image, Network* networks, float** probabilities) 
     enc_output = (float*)malloc(sizeof(float) * enc_size);
 
     for (int i = 0; i < image->n; i++) {
+		printf("Processing image %d/%d\n", i + 1, image->n);
+
         /*patch embedding*/
         Conv2d(image[i].data, layer[0], networks[1], networks[2]);
         /*flatten and transpose*/
@@ -543,6 +552,7 @@ void ViT_seq_opencl(ImageData* image, Network* networks, float** probabilities) 
         /*position embedding*/
         pos_emb(layer[2], layer[3], networks[3]);
 
+		printf("-- Starting Encoder --\n");
         /*Encoder - 12 Layers*/
         Encoder(layer[3], enc_layer[0],
             networks[4], networks[5], networks[6], networks[7],
@@ -619,7 +629,7 @@ void ViT_seq_opencl(ImageData* image, Network* networks, float** probabilities) 
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 	free(kernel_source);
-	clReleaseCommandQueue(queue);
-	clReleaseContext(context);
+	clReleaseCommandQueue(ctx.queue);
+	clReleaseContext(ctx.context);
 	clReleaseProgram(program);
 }
