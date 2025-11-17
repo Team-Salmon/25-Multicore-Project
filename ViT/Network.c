@@ -4,6 +4,7 @@
 #include <string.h>
 #include "dirent.h"
 #include <math.h>  // roundf 함수를 사용하기 위해 추가
+#include <CL/cl.h>
 
 // 이미지 데이터 정보를 담을 구조체 정의
 typedef struct {
@@ -17,6 +18,7 @@ typedef struct {
 typedef struct {
     float* data;
     size_t size;   // float 원소 개수
+    cl_mem buffer;
 } Network;
 
 // input.bin 파일의 헤더는 4개의 int32: (n, c, h, w)

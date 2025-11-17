@@ -22,3 +22,11 @@ __kernel void linear_layer(
 
     output[token_index * output_size + index] = sum;
 }
+
+__kernel void gelu_activation(__global float* data, const int size) {
+    int i = get_global_id(0);
+    if (i >= size) return;
+
+    float x = data[i];
+    data[i] = 0.5f * x * (1.0f + erf(x * 0.70710678f));
+}

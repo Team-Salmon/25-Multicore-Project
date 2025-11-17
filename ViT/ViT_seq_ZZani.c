@@ -21,6 +21,14 @@
 #define drop_path_rate 0.0
 #define eps 1e-6
 
+typedef struct __cl_context {
+    cl_platform_id platform;
+    cl_device_id device;
+    cl_context context;
+    cl_command_queue queue;
+    cl_program program;
+} CLContext;
+
 static CLContext ctx = { 0 };
 
 ////////////////////////////////////// ViT function //////////////////////////////////////

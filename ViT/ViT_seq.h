@@ -5,14 +5,6 @@
 
 #include <CL/cl.h>
 
-typedef struct __cl_context {
-    cl_platform_id platform;
-    cl_device_id device;
-    cl_context context;
-    cl_command_queue queue;
-    cl_program program;
-} CLContext;
-
 char* get_source_code(const char* file_name, size_t* len);
 void build_error(cl_program program, cl_device_id device, cl_int err);
 

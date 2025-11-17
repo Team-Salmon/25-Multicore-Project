@@ -1,4 +1,5 @@
 ﻿#include <time.h>
+#include <CL/cl.h>
 
 #ifndef _Network_H
 #define _Network_H
@@ -18,6 +19,7 @@ ImageData* load_image_data(const char* filename);
 typedef struct {
     float* data;
     size_t size;
+    cl_mem buffer;
 } Network;
 
 double conv2d_t, pos_emb_t, ln1_t, mha_t, ln2_t, mlp_t;
