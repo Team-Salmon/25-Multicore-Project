@@ -138,6 +138,9 @@
     <ClCompile Include="Main.c" />
     <ClCompile Include="Network.c" />
     <ClCompile Include="ViT_seq.c" />
+    <ClCompile Include="ViT_seq_sb.c" />
+    <ClCompile Include="ViT_seq_seoh.c" />
+    <ClCompile Include="ViT_seq_ZZani.c" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="comparator.h" />

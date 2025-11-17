@@ -1,4 +1,4 @@
-ï»¿#pragma warning(disable : 4996)
+#pragma warning(disable : 4996)
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -20,6 +20,8 @@
 #define attn_dropout 0.0
 #define drop_path_rate 0.0
 #define eps 1e-6
+
+static CLContext ctx = { 0 };
 
 ////////////////////////////////////// ViT function //////////////////////////////////////
 
@@ -60,14 +62,14 @@ static void flatten_transpose(float* input, float* output) {
     int output_size = img_size / patch_size;
     int num_patches = output_size * output_size;
 
-    // ê° ê³µê°„ ìœ„ì¹˜(oh, ow)ë¥¼ í•˜ë‚˜ì˜ íŒ¨ì¹˜ë¡œ ì·¨ê¸‰í•˜ì—¬ patch index ê³„ì‚°
+    // °¢ °ø°£ À§Ä¡(oh, ow)¸¦ ÇÏ³ªÀÇ ÆĞÄ¡·Î Ãë±ŞÇÏ¿© patch index °è»ê
     for (int oh = 0; oh < output_size; oh++) {
         for (int ow = 0; ow < output_size; ow++) {
             int patch_idx = oh * output_size + ow;
             for (int oc = 0; oc < embed_dim; oc++) {
-                // ê¸°ì¡´ ì…ë ¥ì€ (oc, oh, ow)
+                // ±âÁ¸ ÀÔ·ÂÀº (oc, oh, ow)
                 int idx_input = (oc * output_size + oh) * output_size + ow;
-                // ì›í•˜ëŠ” ì¶œë ¥ì€ (patch_idx, oc)
+                // ¿øÇÏ´Â Ãâ·ÂÀº (patch_idx, oc)
                 int idx_output = patch_idx * embed_dim + oc;
                 output[idx_output] = input[idx_input];
                 //printf("%f ",output[idx_output]);
@@ -77,17 +79,17 @@ static void flatten_transpose(float* input, float* output) {
 }
 
 static void class_token(float* patch_tokens, float* final_tokens, Network cls_tk) {
-    // ì´ë¯¸ì§€ì˜ íŒ¨ì¹˜ ìˆ˜ ê³„ì‚°: output_size = img_size / patch_size, num_patches = output_size^2
+    // ÀÌ¹ÌÁöÀÇ ÆĞÄ¡ ¼ö °è»ê: output_size = img_size / patch_size, num_patches = output_size^2
     int output_size = img_size / patch_size;
     int num_patches = output_size * output_size;
 
-    // 1. ì²« ë²ˆì§¸ í† í°ì— class token ë³µì‚¬ (networks[0].dataì— ì €ì¥ë¨, embed_dim ê¸¸ì´)
+    // 1. Ã¹ ¹øÂ° ÅäÅ«¿¡ class token º¹»ç (networks[0].data¿¡ ÀúÀåµÊ, embed_dim ±æÀÌ)
     for (int j = 0; j < embed_dim; j++) {
         final_tokens[j] = cls_tk.data[j];
     }
 
-    // 2. ì´í›„ patch_tokensë¥¼ ì´ì–´ë¶™ì„
-    // final_tokensì˜ ì¸ë±ìŠ¤ embed_dimë¶€í„°, patch_tokens ì „ì²´(embed_dim * num_patches) ë³µì‚¬
+    // 2. ÀÌÈÄ patch_tokens¸¦ ÀÌ¾îºÙÀÓ
+    // final_tokensÀÇ ÀÎµ¦½º embed_dimºÎÅÍ, patch_tokens ÀüÃ¼(embed_dim * num_patches) º¹»ç
     memcpy(final_tokens + embed_dim, patch_tokens, sizeof(float) * embed_dim * num_patches);
 
     int total_tokens = num_patches + 1; // class token + patch tokens
@@ -98,7 +100,7 @@ static void class_token(float* patch_tokens, float* final_tokens, Network cls_tk
 }
 
 static void pos_emb(float* input, float* output, Network pos_emb) {
-    // output_size: í•œ ë³€ì˜ íŒ¨ì¹˜ ìˆ˜, num_patches: ì „ì²´ íŒ¨ì¹˜ ìˆ˜, total_tokens: class token + patch tokens
+    // output_size: ÇÑ º¯ÀÇ ÆĞÄ¡ ¼ö, num_patches: ÀüÃ¼ ÆĞÄ¡ ¼ö, total_tokens: class token + patch tokens
     int output_size = img_size / patch_size;
     int num_patches = output_size * output_size;
     int total_tokens = num_patches + 1;
@@ -139,7 +141,7 @@ static void multihead_attn(float* input, float* output,
     float* K = (float*)malloc(sizeof(float) * tokens * embed_dim);
     float* V = (float*)malloc(sizeof(float) * tokens * embed_dim);
 
-    /*Q, K, V êµ¬í•˜ê¸°*/
+    /*Q, K, V ±¸ÇÏ±â*/
     for (int t = 0; t < tokens; t++) {
         float sum_q, sum_k, sum_v;
         for (int i = 0; i < embed_dim; i++) {
@@ -157,20 +159,20 @@ static void multihead_attn(float* input, float* output,
     int print_tokens = tokens < 5 ? tokens : 5;
     int print_dims = embed_dim < 10 ? embed_dim : 10;
 
-    /*Attn ê²°ê³¼ë¥¼ ì €ì¥í•  ë²„í¼*/
+    /*Attn °á°ú¸¦ ÀúÀåÇÒ ¹öÆÛ*/
     float* attn_output = (float*)malloc(sizeof(float) * tokens * embed_dim);
     for (int i = 0; i < tokens * embed_dim; i++) attn_output[i] = 0.0f;
 
-    /*headë³„ë¡œ attn ìˆ˜í–‰*/
+    /*headº°·Î attn ¼öÇà*/
     for (int h = 0; h < num_heads; h++) {
         int head_offset = h * head_dim;
 
-        // attn_score ì €ì¥ ê³µê°„
+        // attn_score ÀúÀå °ø°£
         float* scores = (float*)malloc(sizeof(float) * tokens * tokens);
         float* scores_tmp = (float*)malloc(sizeof(float) * tokens * tokens);
 
 
-        // ê° headì— ëŒ€í•´ scaled-dot attn
+        // °¢ head¿¡ ´ëÇØ scaled-dot attn
         for (int i = 0; i < tokens; i++) {
             for (int j = 0; j < tokens; j++) {
                 float score = 0.0f;
@@ -183,7 +185,7 @@ static void multihead_attn(float* input, float* output,
             }
         }
 
-        // softmax ì ìš©
+        // softmax Àû¿ë
         for (int i = 0; i < tokens; i++) {
             float max_val = scores[i * tokens];
             for (int j = 1; j < tokens; j++) {
@@ -199,7 +201,7 @@ static void multihead_attn(float* input, float* output,
             }
         }
 
-        // scoresì™€ Vë¥¼ ê³±í•´ head output ê³„ì‚°
+        // scores¿Í V¸¦ °öÇØ head output °è»ê
         float* head_out = (float*)malloc(sizeof(float) * tokens * head_dim);
         for (int i = 0; i < tokens; i++) {
             for (int d = 0; d < head_dim; d++) {
@@ -211,7 +213,7 @@ static void multihead_attn(float* input, float* output,
             }
         }
 
-        // head_outë¥¼ attn_outputì˜ í•´ë‹¹ ë¶€ë¶„ì— ë³µì‚¬
+        // head_out¸¦ attn_outputÀÇ ÇØ´ç ºÎºĞ¿¡ º¹»ç
         for (int i = 0; i < tokens; i++) {
             for (int d = 0; d < head_dim; d++) {
                 attn_output[i * embed_dim + head_offset + d] = head_out[i * head_dim + d];
@@ -224,7 +226,7 @@ static void multihead_attn(float* input, float* output,
 
     free(Q); free(K); free(V);
 
-    // ìµœì¢… ì„ í˜• í”„ë¡œì ì…˜
+    // ÃÖÁ¾ ¼±Çü ÇÁ·ÎÁ§¼Ç
     for (int t = 0; t < tokens; t++) {
         for (int i = 0; i < embed_dim; i++) {
             float sum = out_bias.data[i];
@@ -267,7 +269,7 @@ static void mlp_block(float* input, float* output, Network fc1_weight, Network f
     float* fc1_out = (float*)malloc(sizeof(float) * tokens * hidden_dim);
 
     linear_layer(input, fc1_out, tokens, embed_dim, hidden_dim, fc1_weight, fc1_bias);
-    // GELU í™œì„±í™”
+    // GELU È°¼ºÈ­
     for (int i = 0; i < tokens * hidden_dim; i++) {
         fc1_out[i] = gelu(fc1_out[i]);
     }
@@ -302,9 +304,7 @@ static void Encoder(float* input, float* output,
     layer_norm(residual, ln2_out, ln2_w, ln2_b);
 
     /*MLP*/
-    start_timer();
     mlp_block(ln2_out, mlp_out, mlp1_w, mlp1_b, mlp2_w, mlp2_b);
-    stop_timer("MLP Time");
 
     /*Residual2*/
     for (int i = 0; i < tokens * embed_dim; i++) {
@@ -315,7 +315,7 @@ static void Encoder(float* input, float* output,
 }
 
 static void Softmax(float* logits, float* probabilities, int length) {
-    // ìˆ˜ì¹˜ ì•ˆì •ì„±ì„ ìœ„í•œ ìµœëŒ€ê°’ ê³„ì‚°
+    // ¼öÄ¡ ¾ÈÁ¤¼ºÀ» À§ÇÑ ÃÖ´ë°ª °è»ê
     float max_val = logits[0];
     for (int i = 1; i < length; i++) {
         if (logits[i] > max_val) {
@@ -323,20 +323,20 @@ static void Softmax(float* logits, float* probabilities, int length) {
         }
     }
 
-    // ê° ì›ì†Œì— ëŒ€í•´ exp(logit - max_val)ì„ ê³„ì‚°í•˜ê³  í•©ì‚°
+    // °¢ ¿ø¼Ò¿¡ ´ëÇØ exp(logit - max_val)À» °è»êÇÏ°í ÇÕ»ê
     float sum_exp = 0.0f;
     for (int i = 0; i < length; i++) {
         probabilities[i] = expf(logits[i] - max_val);
         sum_exp += probabilities[i];
     }
 
-    // í™•ë¥ ê°’ìœ¼ë¡œ ì •ê·œí™”
+    // È®·ü°ªÀ¸·Î Á¤±ÔÈ­
     for (int i = 0; i < length; i++) {
         probabilities[i] /= sum_exp;
     }
 }
 
-////////////////////////////////////// layerë³„ size //////////////////////////////////////
+////////////////////////////////////// layerº° size //////////////////////////////////////
 static const int size[] = {
     embed_dim * (img_size / patch_size) * (img_size / patch_size), // conv2D
     embed_dim * (img_size / patch_size) * (img_size / patch_size), // flatten and transpose
@@ -346,46 +346,32 @@ static const int size[] = {
 
 static const int enc_size = embed_dim * ((img_size / patch_size) * (img_size / patch_size) + 1);
 
-char* get_source_code(const char* file_name, size_t* len) {
-    FILE* file = fopen(file_name, "rb");
-    if (file == NULL) {
-        printf("[%s:%d] Failed to open %s\n", __FILE__, __LINE__, file_name);
-        exit(EXIT_FAILURE);
-    }
+void ViT_seq_ZZani(ImageData* image, Network* networks, float** probabilities) {
+    cl_int err;
 
-    fseek(file, 0, SEEK_END);
-    size_t length = (size_t)ftell(file);
-    rewind(file);
+    err = clGetPlatformIDs(1, &ctx.platform, NULL);
+    CHECK_ERROR(err);
 
-    char* source_code = (char*)malloc(length + 1);
-    fread(source_code, length, 1, file);
-    source_code[length] = '\0';
-    fclose(file);
-    *len = length;
+    err = clGetDeviceIDs(ctx.platform, CL_DEVICE_TYPE_GPU, 1, &ctx.device, NULL);
+    CHECK_ERROR(err);
 
-    return source_code;
-}
+    ctx.context = clCreateContext(NULL, 1, &ctx.device, NULL, NULL, &err);
+    CHECK_ERROR(err);
 
-void build_error(cl_program program, cl_device_id device, cl_int err) {
-    if (err == CL_BUILD_PROGRAM_FAILURE) {
-        size_t log_size;
-        char* log;
+    ctx.queue = clCreateCommandQueueWithProperties(ctx.context, ctx.device, 0, &err);
+    CHECK_ERROR(err);
 
-        err = clGetProgramBuildInfo(program, device, CL_PROGRAM_BUILD_LOG, 0, NULL, &log_size);
-        CHECK_ERROR(err);
+    size_t kernel_source_size;
+    char* kernel_source = get_source_code("kernel.cl", &kernel_source_size);
+    cl_program program = clCreateProgramWithSource(ctx.context, 1, (const char**)&kernel_source, &kernel_source_size, &err);
+    CHECK_ERROR(err);
 
-        log = (char*)malloc(log_size + 1);
-        err = clGetProgramBuildInfo(program, device, CL_PROGRAM_BUILD_LOG, log_size, log, NULL);
-        CHECK_ERROR(err);
+    err = clBuildProgram(program, 1, &ctx.device, "", NULL, NULL);
+    build_error(program, ctx.device, err);
+    CHECK_ERROR(err);
 
-        log[log_size] = '\0';
-        printf("Compiler error:\n%s\n", log);
-        free(log);
-        exit(0);
-    };
-}
+    // below : kernel creation, buffer allocation, data transfer, kernel execution, result retrieval, cleanup //////////////
 
-void ViT_seq(ImageData* image, Network* networks, float** probabilities) {
     int token_size = ((img_size / patch_size) * (img_size / patch_size) + 1); // 197
     float* layer[4];
     float* enc_layer[12];
@@ -402,7 +388,7 @@ void ViT_seq(ImageData* image, Network* networks, float** probabilities) {
     }
     enc_output = (float*)malloc(sizeof(float) * enc_size);
 
-    for (int i = 0; i < image->n; i++) {
+    for (int i = 0; i < image->n; i++) {\
         /*patch embedding*/
         Conv2d(image[i].data, layer[0], networks[1], networks[2]);
         /*flatten and transpose*/
@@ -411,7 +397,7 @@ void ViT_seq(ImageData* image, Network* networks, float** probabilities) {
         class_token(layer[1], layer[2], networks[0]);
         /*position embedding*/
         pos_emb(layer[2], layer[3], networks[3]);
-
+        
         /*Encoder - 12 Layers*/
         Encoder(layer[3], enc_layer[0],
             networks[4], networks[5], networks[6], networks[7],
@@ -484,4 +470,11 @@ void ViT_seq(ImageData* image, Network* networks, float** probabilities) {
         /* Softmax */
         Softmax(cls_output, probabilities[i], num_classes);
     }
+
+    ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+    free(kernel_source);
+    clReleaseCommandQueue(ctx.queue);
+    clReleaseContext(ctx.context);
+    clReleaseProgram(program);
 }

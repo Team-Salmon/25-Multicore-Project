@@ -30,6 +30,18 @@
     <ClCompile Include="dirent.c">
       <Filter>소스 파일</Filter>
     </ClCompile>
+    <ClCompile Include="debug.c">
+      <Filter>소스 파일</Filter>
+    </ClCompile>
+    <ClCompile Include="ViT_seq_sb.c">
+      <Filter>소스 파일</Filter>
+    </ClCompile>
+    <ClCompile Include="ViT_seq_seoh.c">
+      <Filter>소스 파일</Filter>
+    </ClCompile>
+    <ClCompile Include="ViT_seq_ZZani.c">
+      <Filter>소스 파일</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="comparator.h">
@@ -42,6 +54,9 @@
       <Filter>헤더 파일</Filter>
     </ClInclude>
     <ClInclude Include="ViT_seq.h">
+      <Filter>헤더 파일</Filter>
+    </ClInclude>
+    <ClInclude Include="debug.h">
       <Filter>헤더 파일</Filter>
     </ClInclude>
   </ItemGroup>

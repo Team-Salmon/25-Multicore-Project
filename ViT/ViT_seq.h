@@ -5,6 +5,14 @@
 
 #include <CL/cl.h>
 
+typedef struct __cl_context {
+    cl_platform_id platform;
+    cl_device_id device;
+    cl_context context;
+    cl_command_queue queue;
+    cl_program program;
+} CLContext;
+
 char* get_source_code(const char* file_name, size_t* len);
 void build_error(cl_program program, cl_device_id device, cl_int err);
 
@@ -15,6 +23,9 @@ void build_error(cl_program program, cl_device_id device, cl_int err);
     }
 
 void ViT_seq(ImageData* image, Network* networks, float** prb);
-void ViT_seq_opencl(ImageData * image, Network * networks, float** prb);
+
+void ViT_seq_sb(ImageData* image, Network* networks, float** prb);
+void ViT_seq_seoh(ImageData* image, Network* networks, float** prb);
+void ViT_seq_ZZani(ImageData* image, Network* networks, float** prb);
 
 #endif#pragma once
