@@ -302,9 +302,7 @@ static void Encoder(float* input, float* output,
     layer_norm(residual, ln2_out, ln2_w, ln2_b);
 
     /*MLP*/
-    start_timer();
     mlp_block(ln2_out, mlp_out, mlp1_w, mlp1_b, mlp2_w, mlp2_b);
-    stop_timer("MLP Time");
 
     /*Residual2*/
     for (int i = 0; i < tokens * embed_dim; i++) {
