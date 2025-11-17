@@ -250,13 +250,19 @@ static void multihead_attn(float* input, float* output,
     free(attn_output);
 }
 
-static float gelu(float x) {
-    return 0.5f * x * (1.0f + erff(x / sqrtf(2.0f)));
-}
-static void gelu_activation(float* input, float* output, int size) {
-    for (int i = 0; i < size; i++) {
-        output[i] = gelu(input[i]);
-    }
+static void gelu_activation(float* input, int size) {
+    cl_int err;
+	cl_mem buffer = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(float) * size, input, &err);
+
+    err = clSetKernelArg(ctx.gelu_kernel, 0, sizeof(cl_mem), &buffer); CHECK_ERROR(err);
+    err = clSetKernelArg(ctx.gelu_kernel, 1, sizeof(int), &size); CHECK_ERROR(err);
+
+    size_t global_work_size = size;
+
+    err = clEnqueueNDRangeKernel(ctx.queue, ctx.gelu_kernel, 1, NULL, &global_work_size, NULL, 0, NULL, NULL);
+    CHECK_ERROR(err);
+
+	err = clEnqueueReadBuffer(ctx.queue, buffer, CL_TRUE, 0, sizeof(float) * size, input, 0, NULL, NULL);
 }
 
 static void linear_layer(float* input, float* output, int tokens, int in_features, int out_features, Network weight, Network bias) {
@@ -291,11 +297,7 @@ static void mlp_block(float* input, float* output, Network fc1_weight, Network f
     float* fc1_out = (float*)malloc(sizeof(float) * tokens * hidden_dim);
 
     linear_layer(input, fc1_out, tokens, embed_dim, hidden_dim, fc1_weight, fc1_bias);
-    // GELU È°¼ºÈ­
-    for (int i = 0; i < tokens * hidden_dim; i++) {
-        fc1_out[i] = gelu(fc1_out[i]);
-    }
-    // fc2: (tokens, in_dim)
+	gelu_activation(fc1_out, tokens * hidden_dim);
     linear_layer(fc1_out, output, tokens, hidden_dim, embed_dim, fc2_weight, fc2_bias);
     free(fc1_out);
 }
@@ -326,9 +328,7 @@ static void Encoder(float* input, float* output,
     layer_norm(residual, ln2_out, ln2_w, ln2_b);
 
     /*MLP*/
-    start_timer();
     mlp_block(ln2_out, mlp_out, mlp1_w, mlp1_b, mlp2_w, mlp2_b);
-    stop_timer("MLP Time");
 
     /*Residual2*/
     for (int i = 0; i < tokens * embed_dim; i++) {
@@ -408,6 +408,7 @@ void ViT_seq_sb(ImageData* image, Network* networks, float** probabilities) {
     }
 
 	ctx.linear_kernel = clCreateKernel(ctx.program, "linear_layer", &err); CHECK_ERROR(err);
+	ctx.gelu_kernel = clCreateKernel(ctx.program, "gelu_activation", &err); CHECK_ERROR(err);
 
     // below : kernel creation, buffer allocation, data transfer, kernel execution, result retrieval, cleanup //////////////
 
