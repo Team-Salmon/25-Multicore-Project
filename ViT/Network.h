@@ -1,20 +1,20 @@
-#include <time.h>
+ï»¿#include <time.h>
 
 #ifndef _Network_H
 #define _Network_H
 
-// ÀÌ¹ÌÁö µ¥ÀÌÅÍ Á¤º¸¸¦ ´ãÀ» ±¸Á¶Ã¼ Á¤ÀÇ
+// ì´ë¯¸ì§€ ë°ì´í„° ì •ë³´ë¥¼ ë‹´ì„ êµ¬ì¡°ì²´ ì •ì˜
 typedef struct {
-    int n;      // ÀÌ¹ÌÁö °³¼ö
-    int c;      // Ã¤³Î ¼ö
-    int h;      // ³ôÀÌ
-    int w;      // ³Êºñ
-    float* data; // ¸ğµç ÀÌ¹ÌÁö µ¥ÀÌÅÍ¸¦ ¿¬¼ÓµÈ ¸Ş¸ğ¸® °ø°£¿¡ ÀúÀå (N x C x H x W)
+    int n;      // ì´ë¯¸ì§€ ê°œìˆ˜
+    int c;      // ì±„ë„ ìˆ˜
+    int h;      // ë†’ì´
+    int w;      // ë„ˆë¹„
+    float* data; // ëª¨ë“  ì´ë¯¸ì§€ ë°ì´í„°ë¥¼ ì—°ì†ëœ ë©”ëª¨ë¦¬ ê³µê°„ì— ì €ì¥ (N x C x H x W)
 } ImageData;
 
 ImageData* load_image_data(const char* filename);
 
-// Network ·Îµå¿¡ ´ëÇÑ ·ÎÁ÷
+// Network ë¡œë“œì— ëŒ€í•œ ë¡œì§
 typedef struct {
     float* data;
     size_t size;

@@ -1,4 +1,4 @@
-#include "Network.h"
+﻿#include "Network.h"
 
 #ifndef _ViT_seq_H
 #define _ViT_seq_H

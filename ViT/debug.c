@@ -1,4 +1,4 @@
-#include "debug.h"
+﻿#include "debug.h"
 
 static clock_t timer;
 

@@ -1,4 +1,4 @@
-/* dirent.h for Windows */
+Ôªø/* dirent.h for Windows */
 #ifndef DIRENT_H
 #define DIRENT_H
 
@@ -12,7 +12,7 @@ extern "C" {
 #define MAX_FILENAME_LEN 260
 
     struct dirent {
-        char d_name[MAX_FILENAME_LEN];  // ∆ƒ¿œ ¿Ã∏ß
+        char d_name[MAX_FILENAME_LEN];  // ÌååÏùº Ïù¥Î¶Ñ
     };
 
     typedef struct {

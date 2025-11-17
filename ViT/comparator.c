@@ -1,4 +1,4 @@
-#define _CRT_SECURE_NO_WARNINGS
+ï»¿#define _CRT_SECURE_NO_WARNINGS
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -7,13 +7,13 @@
 #define BUFFER_SIZE 1024
 #define IMAGE_COUNT 100
 
-// ¹®ÀÚ¿­¿¡¼­ index(label)¿Í probability ÃßÃâ
+// ë¬¸ìžì—´ì—ì„œ index(label)ì™€ probability ì¶”ì¶œ
 int parse_line(const char* line, int* label, float* prob) {
-    // Æ÷¸Ë: [0] label: 65 / prob: 0.919345)
+    // í¬ë§·: [0] label: 65 / prob: 0.919345)
     return sscanf(line, "[%*d] label: %d / prob: %f)", label, prob);
 }
 
-// °³Çà Á¦°Å
+// ê°œí–‰ ì œê±°
 static void trim_newline(char* str) {
     size_t len = strlen(str);
     if (len > 0 && str[len - 1] == '\n')
@@ -43,7 +43,7 @@ int comparator(void) {
     for (int line_number = 0; line_number < IMAGE_COUNT; ++line_number) {
         if (fgets(line_result, BUFFER_SIZE, fp_result) == NULL ||
             fgets(line_answer, BUFFER_SIZE, fp_answer) == NULL) {
-            fprintf(stderr, "Line %d: ÆÄÀÏÀÇ ÁÙ ¼ö°¡ ÃæºÐÇÏÁö ¾Ê½À´Ï´Ù.\n", line_number);
+            fprintf(stderr, "Line %d: íŒŒì¼ì˜ ì¤„ ìˆ˜ê°€ ì¶©ë¶„í•˜ì§€ ì•ŠìŠµë‹ˆë‹¤.\n", line_number);
             errors++;
             break;
         }
@@ -56,7 +56,7 @@ int comparator(void) {
 
         if (parse_line(line_result, &label_r, &prob_r) != 2 ||
             parse_line(line_answer, &label_a, &prob_a) != 2) {
-            fprintf(stderr, "Line %d: ÆÄ½Ì ¿À·ù ¹ß»ý\n", line_number);
+            fprintf(stderr, "Line %d: íŒŒì‹± ì˜¤ë¥˜ ë°œìƒ\n", line_number);
             errors++;
             continue;
         }

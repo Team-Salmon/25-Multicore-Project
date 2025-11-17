@@ -1,4 +1,4 @@
-#include "dirent.h"
+﻿#include "dirent.h"
 #include <string.h>
 #include <stdlib.h>
 #define _CRT_SECURE_NO_WARNINGS
