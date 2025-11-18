@@ -21,7 +21,7 @@
 #define drop_path_rate 0.0
 #define eps 1e-6
 
-#define BATCH_SIZE 2
+#define BATCH_SIZE 4
 
 typedef struct __cl_context {
     cl_platform_id platform;
