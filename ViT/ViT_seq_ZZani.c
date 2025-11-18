@@ -396,87 +396,178 @@ void ViT_seq_ZZani(ImageData* image, Network* networks, float** probabilities) {
     }
     enc_output = (float*)malloc(sizeof(float) * enc_size);
 
-    for (int i = 0; i < image->n; i++) {\
+    clock_t start, end;
+    double cpu_time_used;
+
+    for (int i = 0; i < image->n; i++) {
+        clock_t total_start = clock();
+        printf("Processing image %d/%d\n", i + 1, image->n);
+
         /*patch embedding*/
+        start = clock();
         Conv2d(image[i].data, layer[0], networks[1], networks[2]);
+        end = clock();
+        cpu_time_used = ((double)(end - start)) / CLOCKS_PER_SEC;
+        printf("  - Conv2d: %f seconds\n", cpu_time_used);
+
         /*flatten and transpose*/
+        start = clock();
         flatten_transpose(layer[0], layer[1]);
+        end = clock();
+        cpu_time_used = ((double)(end - start)) / CLOCKS_PER_SEC;
+        printf("  - flatten_transpose: %f seconds\n", cpu_time_used);
+
         /*prepend class token*/
+        start = clock();
         class_token(layer[1], layer[2], networks[0]);
+        end = clock();
+        cpu_time_used = ((double)(end - start)) / CLOCKS_PER_SEC;
+        printf("  - class_token: %f seconds\n", cpu_time_used);
+
         /*position embedding*/
+        start = clock();
         pos_emb(layer[2], layer[3], networks[3]);
+        end = clock();
+        cpu_time_used = ((double)(end - start)) / CLOCKS_PER_SEC;
+        printf("  - pos_emb: %f seconds\n", cpu_time_used);
         
         /*Encoder - 12 Layers*/
+        start = clock();
         Encoder(layer[3], enc_layer[0],
             networks[4], networks[5], networks[6], networks[7],
             networks[8], networks[9], networks[10], networks[11],
             networks[12], networks[13], networks[14], networks[15]);
+        end = clock();
+        cpu_time_used = ((double)(end - start)) / CLOCKS_PER_SEC;
+        printf("  - Encoder 1: %f seconds\n", cpu_time_used);
 
+        start = clock();
         Encoder(enc_layer[0], enc_layer[1],
             networks[16], networks[17], networks[18], networks[19],
             networks[20], networks[21], networks[22], networks[23],
             networks[24], networks[25], networks[26], networks[27]);
+        end = clock();
+        cpu_time_used = ((double)(end - start)) / CLOCKS_PER_SEC;
+        printf("  - Encoder 2: %f seconds\n", cpu_time_used);
 
+        start = clock();
         Encoder(enc_layer[1], enc_layer[2],
             networks[28], networks[29], networks[30], networks[31],
             networks[32], networks[33], networks[34], networks[35],
             networks[36], networks[37], networks[38], networks[39]);
+        end = clock();
+        cpu_time_used = ((double)(end - start)) / CLOCKS_PER_SEC;
+        printf("  - Encoder 3: %f seconds\n", cpu_time_used);
 
+        start = clock();
         Encoder(enc_layer[2], enc_layer[3],
             networks[40], networks[41], networks[42], networks[43],
             networks[44], networks[45], networks[46], networks[47],
             networks[48], networks[49], networks[50], networks[51]);
+        end = clock();
+        cpu_time_used = ((double)(end - start)) / CLOCKS_PER_SEC;
+        printf("  - Encoder 4: %f seconds\n", cpu_time_used);
 
+        start = clock();
         Encoder(enc_layer[3], enc_layer[4],
             networks[52], networks[53], networks[54], networks[55],
             networks[56], networks[57], networks[58], networks[59],
             networks[60], networks[61], networks[62], networks[63]);
+        end = clock();
+        cpu_time_used = ((double)(end - start)) / CLOCKS_PER_SEC;
+        printf("  - Encoder 5: %f seconds\n", cpu_time_used);
 
+        start = clock();
         Encoder(enc_layer[4], enc_layer[5],
             networks[64], networks[65], networks[66], networks[67],
             networks[68], networks[69], networks[70], networks[71],
             networks[72], networks[73], networks[74], networks[75]);
+        end = clock();
+        cpu_time_used = ((double)(end - start)) / CLOCKS_PER_SEC;
+        printf("  - Encoder 6: %f seconds\n", cpu_time_used);
 
+        start = clock();
         Encoder(enc_layer[5], enc_layer[6],
             networks[76], networks[77], networks[78], networks[79],
             networks[80], networks[81], networks[82], networks[83],
             networks[84], networks[85], networks[86], networks[87]);
+        end = clock();
+        cpu_time_used = ((double)(end - start)) / CLOCKS_PER_SEC;
+        printf("  - Encoder 7: %f seconds\n", cpu_time_used);
 
+        start = clock();
         Encoder(enc_layer[6], enc_layer[7],
             networks[88], networks[89], networks[90], networks[91],
             networks[92], networks[93], networks[94], networks[95],
             networks[96], networks[97], networks[98], networks[99]);
+        end = clock();
+        cpu_time_used = ((double)(end - start)) / CLOCKS_PER_SEC;
+        printf("  - Encoder 8: %f seconds\n", cpu_time_used);
 
+        start = clock();
         Encoder(enc_layer[7], enc_layer[8],
             networks[100], networks[101], networks[102], networks[103],
             networks[104], networks[105], networks[106], networks[107],
             networks[108], networks[109], networks[110], networks[111]);
+        end = clock();
+        cpu_time_used = ((double)(end - start)) / CLOCKS_PER_SEC;
+        printf("  - Encoder 9: %f seconds\n", cpu_time_used);
 
+        start = clock();
         Encoder(enc_layer[8], enc_layer[9],
             networks[112], networks[113], networks[114], networks[115],
             networks[116], networks[117], networks[118], networks[119],
             networks[120], networks[121], networks[122], networks[123]);
+        end = clock();
+        cpu_time_used = ((double)(end - start)) / CLOCKS_PER_SEC;
+        printf("  - Encoder 10: %f seconds\n", cpu_time_used);
 
+        start = clock();
         Encoder(enc_layer[9], enc_layer[10],
             networks[124], networks[125], networks[126], networks[127],
             networks[128], networks[129], networks[130], networks[131],
             networks[132], networks[133], networks[134], networks[135]);
+		end = clock();
+		cpu_time_used = ((double)(end - start)) / CLOCKS_PER_SEC;
+		printf("  - Encoder 11: %f seconds\n", cpu_time_used);
 
+		start = clock();
         Encoder(enc_layer[10], enc_layer[11],
             networks[136], networks[137], networks[138], networks[139],
             networks[140], networks[141], networks[142], networks[143],
             networks[144], networks[145], networks[146], networks[147]);
+		end = clock();
+		cpu_time_used = ((double)(end - start)) / CLOCKS_PER_SEC;
+		printf("  - Encoder 12: %f seconds\n", cpu_time_used);
 
+		start = clock();
         layer_norm(enc_layer[11], enc_output, networks[148], networks[149]);
+		end = clock();
+		cpu_time_used = ((double)(end - start)) / CLOCKS_PER_SEC;
+		printf("  - Final Layer Norm: %f seconds\n", cpu_time_used);
 
         /* Token */
         float* cls_token = (float*)malloc(sizeof(float) * embed_dim);
         float* cls_output = (float*)malloc(sizeof(float) * num_classes);
+		start = clock();
         memcpy(cls_token, enc_output, sizeof(float) * embed_dim);
+		end = clock();
+		cpu_time_used = ((double)(end - start)) / CLOCKS_PER_SEC;
+		printf("  - Copy Class Token: %f seconds\n", cpu_time_used);
 
+		start = clock();
         linear_layer(cls_token, cls_output, 1, embed_dim, num_classes, networks[150], networks[151]);
+		end = clock();
+		cpu_time_used = ((double)(end - start)) / CLOCKS_PER_SEC;
+		printf("  - Classification Head: %f seconds\n", cpu_time_used);
+
+		start = clock();
         /* Softmax */
         Softmax(cls_output, probabilities[i], num_classes);
+		end = clock();
+		cpu_time_used = ((double)(end - start)) / CLOCKS_PER_SEC;
+		printf("  - Softmax: %f seconds\n", cpu_time_used);
+
     }
 
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
