@@ -370,7 +370,7 @@ void ViT_seq_ZZani(ImageData* image, Network* networks, float** probabilities) {
     CHECK_ERROR(err);
 
     size_t kernel_source_size;
-    char* kernel_source = get_source_code("kernel.cl", &kernel_source_size);
+    char* kernel_source = get_source_code("kernel_ZZani.cl", &kernel_source_size);
     cl_program program = clCreateProgramWithSource(ctx.context, 1, (const char**)&kernel_source, &kernel_source_size, &err);
     CHECK_ERROR(err);
 
