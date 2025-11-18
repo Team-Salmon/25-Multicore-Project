@@ -583,19 +583,11 @@ void ViT_seq_sb(ImageData* image, Network* networks, float** probabilities) {
     // below : kernel creation, buffer allocation, data transfer, kernel execution, result retrieval, cleanup //////////////
 
     int token_size = ((img_size / patch_size) * (img_size / patch_size) + 1); // 197
-    float* layer[4];
-    float* enc_layer[12];
 
     cl_mem enc_buf[12];
 
     float* enc_output;
     int hidden_dim = ((int)(embed_dim * mlp_ratio)); // 3072s
-
-    // printf("%d %d = %d\n", token_size, hidden_dim, token_size * hidden_dim);
-
-    for (int i = 0; i < 4; i++) {
-        layer[i] = (float*)malloc(sizeof(float) * size[i]);
-    }
 
     for (int i = 0; i < 12; i++) {
 		enc_buf[i] = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE, sizeof(float) * enc_size, NULL, &err); CHECK_ERROR(err);
@@ -631,7 +623,7 @@ void ViT_seq_sb(ImageData* image, Network* networks, float** probabilities) {
         err = clEnqueueCopyBuffer(ctx.queue, buf, layer_buf, 0, sizeof(float) * embed_dim, sizeof(float) * size[0], 0, NULL, NULL); CHECK_ERROR(err);
 
         // positional encoding
-        add_gpu(layer_buf, networks[3].buffer, layer_buf, (int)(size[2] / sizeof(float)));
+        add_gpu(layer_buf, networks[3].buffer, layer_buf, size[2]);
 
         Encoder_gpu(layer_buf, enc_buf[0],
             networks[4], networks[5], networks[6], networks[7],
