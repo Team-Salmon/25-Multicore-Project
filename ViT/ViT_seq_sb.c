@@ -361,32 +361,20 @@ void ViT_seq_sb(ImageData* image, Network* networks, float** probabilities) {
 	cl_mem cls_tokens = clCreateBuffer(ctx.context, CL_MEM_READ_ONLY, sizeof(float) * BATCH_SIZE * embed_dim, NULL, &err);
     cl_mem cls_output = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE, sizeof(float) * BATCH_SIZE * num_classes, NULL, &err);
 
-    cl_event input_event;
-
     int batch_size;
 	float image_bytes = sizeof(float) * in_chans * img_size * img_size;
+
+    start_timer();
 
     for (int i = 0; i < image->n; i += BATCH_SIZE) {
         printf("Processing image %d/%d\n", i + 1, image->n);
 		batch_size = (image->n - i) < BATCH_SIZE ? (image->n - i) : BATCH_SIZE;
 
         for (int j = 0; j < batch_size; j++) {
-            if (j < batch_size - 1) {
-				err = clEnqueueWriteBuffer(ctx.input_queue, input, CL_FALSE, image_bytes * j,
-					image_bytes, image[i + j].data, 0, NULL, NULL);
-				CHECK_ERROR(err);
-            }
-            else {
-                err = clEnqueueWriteBuffer(ctx.input_queue, input, CL_FALSE, image_bytes * j,
-                    image_bytes, image[i + j].data, 0, NULL, &input_event);
-                CHECK_ERROR(err);
-            }
+            err = clEnqueueWriteBuffer(ctx.input_queue, input, CL_FALSE, image_bytes * j,
+                image_bytes, image[i + j].data, 0, NULL, NULL);
+            CHECK_ERROR(err);
         }
-
-		err = clEnqueueBarrierWithWaitList(ctx.compute_queue, 1, &input_event, NULL); CHECK_ERROR(err);
-
-        clReleaseEvent(input_event);
-        input_event = NULL;
 
 		// Patch Embedding
         Conv2d_gpu(input, buf, networks[1], networks[2], batch_size);
@@ -483,10 +471,12 @@ void ViT_seq_sb(ImageData* image, Network* networks, float** probabilities) {
         err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.softmax_kernel, 1, NULL, &soft_size, NULL, 0, NULL, NULL); CHECK_ERROR(err);
 
 		for (int b = 0; b < batch_size; b++) {
-			err = clEnqueueReadBuffer(ctx.compute_queue, cls_output, CL_FALSE, sizeof(float) * num_classes * b, sizeof(float) * num_classes, 
+			err = clEnqueueReadBuffer(ctx.compute_queue, cls_output, CL_TRUE, sizeof(float) * num_classes * b, sizeof(float) * num_classes, 
                     probabilities[i + b], 0, NULL, NULL); CHECK_ERROR(err); 
 		}
 	}
+
+	stop_timer("total time");
 
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
