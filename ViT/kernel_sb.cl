@@ -60,7 +60,7 @@ __kernel void attention_score (
     scores[score_batch_offset + i * TOKENS + j] = score * scale;
 }
 
-__kernel void softmax(
+__kernel void softmax (
     __global float* scores,
     const int size ) {
 

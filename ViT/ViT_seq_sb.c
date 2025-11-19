@@ -108,8 +108,8 @@ static void multihead_attn(cl_mem input, cl_mem output,
 
     linear_layer(input, QKV, total_token, embed_dim, qkv_dim, in_weight, in_bias);
 
-    cl_mem attn_output_buf = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE, sizeof(float) * total_token * embed_dim, NULL, &err); CHECK_ERROR(err);
-    cl_mem scores_buf = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE, sizeof(float) * total_token * tokens, NULL, &err); CHECK_ERROR(err);
+    cl_mem attn_out = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE, sizeof(float) * total_token * embed_dim, NULL, &err); CHECK_ERROR(err);
+    cl_mem scores = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE, sizeof(float) * total_token * tokens, NULL, &err); CHECK_ERROR(err);
 
     /*head별로 attn 수행*/
     for (int h = 0; h < num_heads; h++) {
@@ -117,46 +117,45 @@ static void multihead_attn(cl_mem input, cl_mem output,
 
         // Attention Score 계산
         err = clSetKernelArg(ctx.score_kernel, 0, sizeof(cl_mem), &QKV); CHECK_ERROR(err);
-        err = clSetKernelArg(ctx.score_kernel, 1, sizeof(cl_mem), &scores_buf); CHECK_ERROR(err);
+        err = clSetKernelArg(ctx.score_kernel, 1, sizeof(cl_mem), &scores); CHECK_ERROR(err);
         err = clSetKernelArg(ctx.score_kernel, 2, sizeof(int), &head_offset); CHECK_ERROR(err);
 
-        size_t score_size[3] = {
+        size_t global_size_score[3] = {
             (size_t)tokens,
             (size_t)tokens,
 			(size_t)batch_size
         };
 
-        err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.score_kernel, 3, NULL, score_size, NULL, 0, NULL, NULL); CHECK_ERROR(err);
+        err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.score_kernel, 3, NULL, global_size_score, NULL, 0, NULL, NULL); CHECK_ERROR(err);
 
         // Softmax 계산
-
 		int token_size = tokens;
-        err = clSetKernelArg(ctx.softmax_kernel, 0, sizeof(cl_mem), &scores_buf); CHECK_ERROR(err);
+        err = clSetKernelArg(ctx.softmax_kernel, 0, sizeof(cl_mem), &scores); CHECK_ERROR(err);
 		err = clSetKernelArg(ctx.softmax_kernel, 1, sizeof(int), &token_size); CHECK_ERROR(err);
 
-        size_t soft_size = (size_t)tokens * batch_size;
-        err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.softmax_kernel, 1, NULL, &soft_size, NULL, 0, NULL, NULL); CHECK_ERROR(err);
+        size_t global_size_softmax = (size_t)tokens * batch_size;
+        err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.softmax_kernel, 1, NULL, &global_size_softmax, NULL, 0, NULL, NULL); CHECK_ERROR(err);
 
-        // Context Vector 계산
-        err = clSetKernelArg(ctx.context_kernel, 0, sizeof(cl_mem), &scores_buf); CHECK_ERROR(err);
+        // Context Vector
+        err = clSetKernelArg(ctx.context_kernel, 0, sizeof(cl_mem), &scores); CHECK_ERROR(err);
         err = clSetKernelArg(ctx.context_kernel, 1, sizeof(cl_mem), &QKV); CHECK_ERROR(err);
-        err = clSetKernelArg(ctx.context_kernel, 2, sizeof(cl_mem), &attn_output_buf); CHECK_ERROR(err);
+        err = clSetKernelArg(ctx.context_kernel, 2, sizeof(cl_mem), &attn_out); CHECK_ERROR(err);
         err = clSetKernelArg(ctx.context_kernel, 3, sizeof(int), &head_offset); CHECK_ERROR(err);
 
-        size_t context_size[3] = { 
+        size_t global_size_context[3] = { 
             (size_t)tokens, 
             (size_t)head_dim,
 			(size_t)batch_size
         };
 
-        err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.context_kernel, 3, NULL, context_size, NULL, 0, NULL, NULL); CHECK_ERROR(err);
+        err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.context_kernel, 3, NULL, global_size_context, NULL, 0, NULL, NULL); CHECK_ERROR(err);
     }
 
-    linear_layer(attn_output_buf, output, total_token, embed_dim, embed_dim, out_weight, out_bias);
+    linear_layer(attn_out, output, total_token, embed_dim, embed_dim, out_weight, out_bias);
 
-    clReleaseMemObject(scores_buf);
     clReleaseMemObject(QKV);
-    clReleaseMemObject(attn_output_buf);
+    clReleaseMemObject(scores);
+    clReleaseMemObject(attn_out);
 }
 
 static void gelu_activation(cl_mem input, int size) {
@@ -255,14 +254,6 @@ static void prepare_input(cl_mem input, cl_mem cls, cl_mem pos, cl_mem output) {
     CHECK_ERROR(err);
 }
 
-////////////////////////////////////// layer별 size //////////////////////////////////////
-static const int size[] = {
-    embed_dim * (img_size / patch_size) * (img_size / patch_size), // conv2D
-    embed_dim * (img_size / patch_size) * (img_size / patch_size), // flatten and transpose
-    embed_dim * ((img_size / patch_size) * (img_size / patch_size) + 1), // class token
-    embed_dim * ((img_size / patch_size) * (img_size / patch_size) + 1) // position embedding
-};
-
 static void initialize_kernel(Network* networks) {
     cl_int err;
 
@@ -272,8 +263,8 @@ static void initialize_kernel(Network* networks) {
     ctx.context = clCreateContext(NULL, 1, &ctx.device, NULL, NULL, &err); CHECK_ERROR(err);
 
     cl_queue_properties props[] = {
-        CL_QUEUE_PROPERTIES,
-        CL_QUEUE_PROFILING_ENABLE,
+        /*CL_QUEUE_PROPERTIES,
+        CL_QUEUE_PROFILING_ENABLE,*/
         0
     };
 
@@ -282,8 +273,7 @@ static void initialize_kernel(Network* networks) {
 
     size_t kernel_source_size;
     char* kernel_source = get_source_code("kernel_sb.cl", &kernel_source_size);
-    ctx.program = clCreateProgramWithSource(ctx.context, 1, (const char**)&kernel_source, &kernel_source_size, &err);
-    CHECK_ERROR(err);
+    ctx.program = clCreateProgramWithSource(ctx.context, 1, (const char**)&kernel_source, &kernel_source_size, &err); CHECK_ERROR(err);
 
     char build_options[1024];
 
@@ -345,44 +335,36 @@ static void initialize_kernel(Network* networks) {
 	free(kernel_source);
 }
 
+static const float image_bytes = sizeof(float) * in_chans * img_size * img_size;
+
 void ViT_seq_sb(ImageData* image, Network* networks, float** probabilities) {
     cl_int err;
 
 	initialize_kernel(networks);
 
-    // below : kernel creation, buffer allocation, data transfer, kernel execution, result retrieval, cleanup //////////////
-
-    int token_size = ((img_size / patch_size) * (img_size / patch_size) + 1); // 197
-
     cl_mem enc_buf[12];
-
-    float* enc_output;
-
     for (int i = 0; i < 12; i++) {
 		enc_buf[i] = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE, sizeof(float) * batch_size * enc_size, NULL, &err); CHECK_ERROR(err);
     }
 
-    enc_output = (float*)malloc(sizeof(float) * enc_size);
-
     cl_mem input = clCreateBuffer(ctx.context, CL_MEM_READ_ONLY, sizeof(float) * batch_size * in_chans * img_size * img_size, NULL, &err); CHECK_ERROR(err);
 	cl_mem output = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE, sizeof(float) * batch_size * enc_size, NULL, &err); CHECK_ERROR(err);
 
-	cl_mem buf = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE, sizeof(float) * batch_size * size[0], NULL, &err); CHECK_ERROR(err);
-	cl_mem layer_buf = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE, sizeof(float) * batch_size * size[2], NULL, &err); CHECK_ERROR(err);
+	cl_mem buf = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE, sizeof(float) * batch_size * embed_dim * num_patches, NULL, &err); CHECK_ERROR(err);
+	cl_mem layer_buf = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE, sizeof(float) * batch_size * embed_dim * tokens, NULL, &err); CHECK_ERROR(err);
 
 	cl_mem cls_tokens = clCreateBuffer(ctx.context, CL_MEM_READ_ONLY, sizeof(float) * batch_size * embed_dim, NULL, &err);
     cl_mem cls_output = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE, sizeof(float) * batch_size * num_classes, NULL, &err);
 
     int current_batch_size;
-	float image_bytes = sizeof(float) * in_chans * img_size * img_size;
-
     int steps = 0;
+
     cl_event input_event = NULL, done_event[2] = { NULL, NULL };
 
     for (int i = 0; i < image->n; i += batch_size) {
         steps = i % 2;
 
-		if (done_event[steps]) {
+		if (done_event[steps]) { // double buffering
 			clWaitForEvents(1, &done_event[steps]);
 
 			clReleaseEvent(done_event[steps]);
@@ -478,13 +460,12 @@ void ViT_seq_sb(ImageData* image, Network* networks, float** probabilities) {
         err = clSetKernelArg(ctx.extract_cls_kernel, 0, sizeof(cl_mem), &output); CHECK_ERROR(err);
         err = clSetKernelArg(ctx.extract_cls_kernel, 1, sizeof(cl_mem), &cls_tokens); CHECK_ERROR(err);
 
-        size_t global_extract[2] = { 
+        size_t global_size_extract_cls[2] = { 
             (size_t)batch_size, 
             (size_t)embed_dim 
         };
 
-        err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.extract_cls_kernel, 2, NULL, global_extract, NULL, 0, NULL, NULL);
-        CHECK_ERROR(err);
+        err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.extract_cls_kernel, 2, NULL, global_size_extract_cls, NULL, 0, NULL, NULL); CHECK_ERROR(err);
 
         linear_layer(cls_tokens, cls_output, batch_size, embed_dim, num_classes, networks[150], networks[151]);
 
@@ -492,8 +473,8 @@ void ViT_seq_sb(ImageData* image, Network* networks, float** probabilities) {
         err = clSetKernelArg(ctx.softmax_kernel, 0, sizeof(cl_mem), &cls_output); CHECK_ERROR(err);
 		err = clSetKernelArg(ctx.softmax_kernel, 1, sizeof(int), &classes); CHECK_ERROR(err);
 
-        size_t soft_size = current_batch_size;
-        err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.softmax_kernel, 1, NULL, &soft_size, NULL, 0, NULL, NULL); CHECK_ERROR(err);
+        size_t global_size_softmax = current_batch_size;
+        err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.softmax_kernel, 1, NULL, &global_size_softmax, NULL, 0, NULL, NULL); CHECK_ERROR(err);
 
 		for (int b = 0; b < current_batch_size; b++) {
 			cl_event* ptr = (b < current_batch_size - 1) ? NULL : &done_event[steps];
@@ -504,8 +485,6 @@ void ViT_seq_sb(ImageData* image, Network* networks, float** probabilities) {
 	}
 
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-	free(enc_output);
 
     clReleaseMemObject(input);
     clReleaseMemObject(buf);
