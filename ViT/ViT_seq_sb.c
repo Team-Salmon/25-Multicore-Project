@@ -27,7 +27,10 @@ typedef struct __cl_context {
     cl_platform_id platform;
     cl_device_id device;
     cl_context context;
-    cl_command_queue queue;
+
+	cl_command_queue input_queue;
+	cl_command_queue compute_queue;
+
     cl_program program;
 
     cl_kernel conv2d_kernel;
@@ -73,7 +76,7 @@ static void Conv2d_gpu(cl_mem input, cl_mem output, Network weight, Network bias
         (size_t)batch_size 
     };
 
-    err = clEnqueueNDRangeKernel(ctx.queue, ctx.conv2d_kernel, 3, NULL, global_work_size, NULL, 0, NULL, NULL); CHECK_ERROR(err);
+    err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.conv2d_kernel, 3, NULL, global_work_size, NULL, 0, NULL, NULL); CHECK_ERROR(err);
 }
 
 static void layer_norm_gpu(cl_mem input, cl_mem ouput, Network weight, Network bias, int batch_size) {
@@ -91,7 +94,7 @@ static void layer_norm_gpu(cl_mem input, cl_mem ouput, Network weight, Network b
 	err = clSetKernelArg(ctx.normalize_kernel, 5, sizeof(int), &dim); CHECK_ERROR(err);
 
 	size_t global_work_size = (size_t)total_tokens;
-	err = clEnqueueNDRangeKernel(ctx.queue, ctx.normalize_kernel, 1, NULL, &global_work_size, NULL, 0, NULL, NULL); CHECK_ERROR(err);
+	err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.normalize_kernel, 1, NULL, &global_work_size, NULL, 0, NULL, NULL); CHECK_ERROR(err);
 }
 
 static void multihead_attn_gpu(cl_mem input, cl_mem output,
@@ -132,7 +135,7 @@ static void multihead_attn_gpu(cl_mem input, cl_mem output,
 			(size_t)batch_size
         };
 
-        err = clEnqueueNDRangeKernel(ctx.queue, ctx.score_kernel, 3, NULL, score_size, NULL, 0, NULL, NULL); CHECK_ERROR(err);
+        err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.score_kernel, 3, NULL, score_size, NULL, 0, NULL, NULL); CHECK_ERROR(err);
 
         // Softmax 계산
         err = clSetKernelArg(ctx.softmax_kernel, 0, sizeof(cl_mem), &scores_buf); CHECK_ERROR(err);
@@ -140,7 +143,7 @@ static void multihead_attn_gpu(cl_mem input, cl_mem output,
 		err = clSetKernelArg(ctx.softmax_kernel, 2, sizeof(int), &batch_size); CHECK_ERROR(err);
 
         size_t soft_size = (size_t)tokens * batch_size;
-        err = clEnqueueNDRangeKernel(ctx.queue, ctx.softmax_kernel, 1, NULL, &soft_size, NULL, 0, NULL, NULL); CHECK_ERROR(err);
+        err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.softmax_kernel, 1, NULL, &soft_size, NULL, 0, NULL, NULL); CHECK_ERROR(err);
 
         // Context Vector 계산
         err = clSetKernelArg(ctx.context_kernel, 0, sizeof(cl_mem), &scores_buf); CHECK_ERROR(err);
@@ -159,7 +162,7 @@ static void multihead_attn_gpu(cl_mem input, cl_mem output,
 			(size_t)batch_size
         };
 
-        err = clEnqueueNDRangeKernel(ctx.queue, ctx.context_kernel, 3, NULL, context_size, NULL, 0, NULL, NULL); CHECK_ERROR(err);
+        err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.context_kernel, 3, NULL, context_size, NULL, 0, NULL, NULL); CHECK_ERROR(err);
     }
 
     linear_layer_gpu(attn_output_buf, output, total_token, embed_dim, embed_dim, out_weight, out_bias);
@@ -177,7 +180,7 @@ static void gelu_activation_gpu(cl_mem input, int size) {
 
 	size_t global_work_size = size;
 
-	err = clEnqueueNDRangeKernel(ctx.queue, ctx.gelu_kernel, 1, NULL, &global_work_size, NULL, 0, NULL, NULL);
+	err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.gelu_kernel, 1, NULL, &global_work_size, NULL, 0, NULL, NULL);
 	CHECK_ERROR(err);
 }
 
@@ -194,7 +197,7 @@ static void linear_layer_gpu(cl_mem input, cl_mem output, int tokens, int in_fea
 
 	size_t global_work_size[2] = { (size_t)tokens, (size_t)out_features };
 
-	err = clEnqueueNDRangeKernel(ctx.queue, ctx.linear_kernel, 2, NULL, global_work_size, NULL, 0, NULL, NULL); CHECK_ERROR(err);
+	err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.linear_kernel, 2, NULL, global_work_size, NULL, 0, NULL, NULL); CHECK_ERROR(err);
 }
 
 static void mlp_block_gpu(cl_mem input, cl_mem output, Network fc1_weight, Network fc1_bias, Network fc2_weight, Network fc2_bias, int batch_size) {
@@ -227,7 +230,7 @@ static void Encoder_gpu(cl_mem input, cl_mem output, int batch_size,
     cl_mem buf = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE, buffer_bytes, NULL, &err);
     CHECK_ERROR(err);
 
-    err = clEnqueueCopyBuffer(ctx.queue, input, output, 0, 0, buffer_bytes, 0, NULL, NULL);
+    err = clEnqueueCopyBuffer(ctx.compute_queue, input, output, 0, 0, buffer_bytes, 0, NULL, NULL);
     CHECK_ERROR(err);
 
     layer_norm_gpu(output, buf, ln1_w, ln1_b, batch_size);
@@ -250,7 +253,7 @@ static void add_gpu(cl_mem a, cl_mem b, cl_mem output, int size) {
 	err = clSetKernelArg(ctx.add_kernel, 3, sizeof(int), &size); CHECK_ERROR(err);
 
 	size_t global_work_size = (size_t)size;
-	err = clEnqueueNDRangeKernel(ctx.queue, ctx.add_kernel, 1, NULL, &global_work_size, NULL, 0, NULL, NULL); CHECK_ERROR(err);
+	err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.add_kernel, 1, NULL, &global_work_size, NULL, 0, NULL, NULL); CHECK_ERROR(err);
 }
 
 static void prepare_input_gpu(cl_mem input, cl_mem cls, cl_mem pos, cl_mem output, int batch_size) {
@@ -272,7 +275,7 @@ static void prepare_input_gpu(cl_mem input, cl_mem cls, cl_mem pos, cl_mem outpu
 		(size_t)batch_size
     };
 
-	err = clEnqueueNDRangeKernel(ctx.queue, ctx.prepare_kernel, 3, NULL, global_work_size, NULL, 0, NULL, NULL); 
+	err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.prepare_kernel, 3, NULL, global_work_size, NULL, 0, NULL, NULL); 
     CHECK_ERROR(err);
 }
 
@@ -289,17 +292,13 @@ static const int enc_size = embed_dim * ((img_size / patch_size) * (img_size / p
 void ViT_seq_sb(ImageData* image, Network* networks, float** probabilities) {
     cl_int err;
 
-    err = clGetPlatformIDs(1, &ctx.platform, NULL);
-    CHECK_ERROR(err);
+    err = clGetPlatformIDs(1, &ctx.platform, NULL); CHECK_ERROR(err);
+    err = clGetDeviceIDs(ctx.platform, CL_DEVICE_TYPE_GPU, 1, &ctx.device, NULL); CHECK_ERROR(err);
 
-    err = clGetDeviceIDs(ctx.platform, CL_DEVICE_TYPE_GPU, 1, &ctx.device, NULL);
-    CHECK_ERROR(err);
+    ctx.context = clCreateContext(NULL, 1, &ctx.device, NULL, NULL, &err); CHECK_ERROR(err);
 
-    ctx.context = clCreateContext(NULL, 1, &ctx.device, NULL, NULL, &err);
-    CHECK_ERROR(err);
-
-    ctx.queue = clCreateCommandQueueWithProperties(ctx.context, ctx.device, 0, &err);
-    CHECK_ERROR(err);
+	ctx.input_queue = clCreateCommandQueueWithProperties(ctx.context, ctx.device, 0, &err); CHECK_ERROR(err);
+	ctx.compute_queue = clCreateCommandQueueWithProperties(ctx.context, ctx.device, 0, &err); CHECK_ERROR(err);
 
     size_t kernel_source_size;
     char* kernel_source = get_source_code("kernel_sb.cl", &kernel_source_size);
@@ -362,6 +361,8 @@ void ViT_seq_sb(ImageData* image, Network* networks, float** probabilities) {
 	cl_mem cls_tokens = clCreateBuffer(ctx.context, CL_MEM_READ_ONLY, sizeof(float) * BATCH_SIZE * embed_dim, NULL, &err);
     cl_mem cls_output = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE, sizeof(float) * BATCH_SIZE * num_classes, NULL, &err);
 
+    cl_event input_event;
+
     int batch_size;
 	float image_bytes = sizeof(float) * in_chans * img_size * img_size;
 
@@ -370,13 +371,22 @@ void ViT_seq_sb(ImageData* image, Network* networks, float** probabilities) {
 		batch_size = (image->n - i) < BATCH_SIZE ? (image->n - i) : BATCH_SIZE;
 
         for (int j = 0; j < batch_size; j++) {
-			err = clEnqueueWriteBuffer(ctx.queue, input, CL_FALSE, image_bytes * j,
-                image_bytes, image[i + j].data, 0, NULL, NULL); 
-            
-            CHECK_ERROR(err);
+            if (j < batch_size - 1) {
+				err = clEnqueueWriteBuffer(ctx.input_queue, input, CL_FALSE, image_bytes * j,
+					image_bytes, image[i + j].data, 0, NULL, NULL);
+				CHECK_ERROR(err);
+            }
+            else {
+                err = clEnqueueWriteBuffer(ctx.input_queue, input, CL_FALSE, image_bytes * j,
+                    image_bytes, image[i + j].data, 0, NULL, &input_event);
+                CHECK_ERROR(err);
+            }
         }
 
-        err = clEnqueueWriteBuffer(ctx.queue, input, CL_FALSE, 0, sizeof(float) * in_chans * img_size * img_size, image[i].data, 0, NULL, NULL); CHECK_ERROR(err);
+		err = clEnqueueBarrierWithWaitList(ctx.compute_queue, 1, &input_event, NULL); CHECK_ERROR(err);
+
+        clReleaseEvent(input_event);
+        input_event = NULL;
 
 		// Patch Embedding
         Conv2d_gpu(input, buf, networks[1], networks[2], batch_size);
@@ -450,18 +460,17 @@ void ViT_seq_sb(ImageData* image, Network* networks, float** probabilities) {
 
 		int dim = embed_dim;
 
-        err = clSetKernelArg(ctx.extract_cls_kernel, 0, sizeof(cl_mem), &output);
-        err |= clSetKernelArg(ctx.extract_cls_kernel, 1, sizeof(cl_mem), &cls_tokens);
-        err |= clSetKernelArg(ctx.extract_cls_kernel, 2, sizeof(int), &tokens);
-        err |= clSetKernelArg(ctx.extract_cls_kernel, 3, sizeof(int), &dim);
-        CHECK_ERROR(err);
+        err = clSetKernelArg(ctx.extract_cls_kernel, 0, sizeof(cl_mem), &output); CHECK_ERROR(err);
+        err = clSetKernelArg(ctx.extract_cls_kernel, 1, sizeof(cl_mem), &cls_tokens); CHECK_ERROR(err);
+        err = clSetKernelArg(ctx.extract_cls_kernel, 2, sizeof(int), &tokens); CHECK_ERROR(err);
+        err = clSetKernelArg(ctx.extract_cls_kernel, 3, sizeof(int), &dim); CHECK_ERROR(err);
 
         size_t global_extract[2] = { 
             (size_t)batch_size, 
             (size_t)embed_dim 
         };
 
-        err = clEnqueueNDRangeKernel(ctx.queue, ctx.extract_cls_kernel, 2, NULL, global_extract, NULL, 0, NULL, NULL);
+        err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.extract_cls_kernel, 2, NULL, global_extract, NULL, 0, NULL, NULL);
         CHECK_ERROR(err);
 
         linear_layer_gpu(cls_tokens, cls_output, batch_size, embed_dim, num_classes, networks[150], networks[151]);
@@ -471,10 +480,10 @@ void ViT_seq_sb(ImageData* image, Network* networks, float** probabilities) {
         err = clSetKernelArg(ctx.softmax_kernel, 1, sizeof(int), &classes); CHECK_ERROR(err);
 
         size_t soft_size = batch_size;
-        err = clEnqueueNDRangeKernel(ctx.queue, ctx.softmax_kernel, 1, NULL, &soft_size, NULL, 0, NULL, NULL); CHECK_ERROR(err);
+        err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.softmax_kernel, 1, NULL, &soft_size, NULL, 0, NULL, NULL); CHECK_ERROR(err);
 
 		for (int b = 0; b < batch_size; b++) {
-			err = clEnqueueReadBuffer(ctx.queue, cls_output, CL_TRUE, sizeof(float) * num_classes * b, sizeof(float) * num_classes, 
+			err = clEnqueueReadBuffer(ctx.compute_queue, cls_output, CL_FALSE, sizeof(float) * num_classes * b, sizeof(float) * num_classes, 
                     probabilities[i + b], 0, NULL, NULL); CHECK_ERROR(err); 
 		}
 	}
@@ -482,14 +491,30 @@ void ViT_seq_sb(ImageData* image, Network* networks, float** probabilities) {
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
     free(kernel_source);
+	free(enc_output);
 
     clReleaseMemObject(input);
     clReleaseMemObject(buf);
     clReleaseMemObject(layer_buf);
     clReleaseMemObject(cls_output);
 
-	clReleaseKernel(ctx.linear_kernel);
-    clReleaseCommandQueue(ctx.queue);
+    clReleaseKernel(ctx.linear_kernel);
+	clReleaseKernel(ctx.gelu_kernel);
+	clReleaseKernel(ctx.score_kernel);
+	clReleaseKernel(ctx.softmax_kernel);
+	clReleaseKernel(ctx.context_kernel);
+	clReleaseKernel(ctx.normalize_kernel);
+	clReleaseKernel(ctx.conv2d_kernel);
+	clReleaseKernel(ctx.add_kernel);
+	clReleaseKernel(ctx.prepare_kernel);
+	clReleaseKernel(ctx.extract_cls_kernel);
+
+	for (int i = 0; i < 12; i++) {
+		clReleaseMemObject(enc_buf[i]);
+	}
+
+	clReleaseCommandQueue(ctx.input_queue);
+    clReleaseCommandQueue(ctx.compute_queue);
     clReleaseContext(ctx.context);
     clReleaseProgram(ctx.program);
 }
