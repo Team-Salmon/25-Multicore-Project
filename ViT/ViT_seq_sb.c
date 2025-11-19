@@ -23,6 +23,7 @@
 
 // custom defines
 #define batch_size 4
+#define tile_size 16
 
 #define output_size img_size / patch_size
 #define num_patches output_size * output_size
@@ -181,9 +182,13 @@ static void linear_layer(cl_mem input, cl_mem output, int token_size, int in_fea
 	err = clSetKernelArg(ctx.linear_kernel, 5, sizeof(int), &in_features); CHECK_ERROR(err);
 	err = clSetKernelArg(ctx.linear_kernel, 6, sizeof(int), &out_features); CHECK_ERROR(err);
 
-	size_t global_work_size[2] = { (size_t)token_size, (size_t)out_features };
+	size_t local_size[2] = { tile_size, tile_size };
+	size_t global_size[2] = {
+		(size_t)((token_size + tile_size - 1) / tile_size) * tile_size,
+		(size_t)((out_features + tile_size - 1) / tile_size) * tile_size
+	};
 
-	err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.linear_kernel, 2, NULL, global_work_size, NULL, 0, NULL, NULL); CHECK_ERROR(err);
+	err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.linear_kernel, 2, NULL, global_size, local_size, 0, NULL, NULL); CHECK_ERROR(err);
 }
 
 static void mlp_block(cl_mem input, cl_mem output, Network fc1_weight, Network fc1_bias, Network fc2_weight, Network fc2_bias) {
@@ -289,7 +294,8 @@ static void initialize_kernel(Network* networks) {
         "-D TOKENS=%d "
         "-D TOTAL_TOKENS=%d "
         "-D HEAD_DIM=%d "
-        "-D QKV_DIM=%d ",
+        "-D QKV_DIM=%d "
+        "-D TILE_SIZE=%d ",
         batch_size,
         img_size,
         patch_size,
@@ -301,7 +307,8 @@ static void initialize_kernel(Network* networks) {
         tokens,
         total_tokens,
         head_dim,
-        qkv_dim
+        qkv_dim,
+        tile_size
     );
 
     err = clBuildProgram(ctx.program, 1, &ctx.device, build_options, NULL, NULL);

@@ -1,25 +1,48 @@
 __kernel void linear_layer(
-	__global const float* input,
-	__global float* output,
-	__global const float* weights,
-	__global const float* bias,
-	const int token_size,
-	const int input_size,
-	const int output_size) {
-	
-	int token_index = get_global_id(0);
-	int index = get_global_id(1);
+    __global const float* input,
+    __global float* output,
+    __global const float* weights,
+    __global const float* bias,
+    const int M,
+    const int K,
+    const int N ) {
 
-	if (token_index >= token_size) return;
-	if (index >= output_size) return;
+    __local float l_input[TILE_SIZE][TILE_SIZE];
+    __local float l_weight[TILE_SIZE][TILE_SIZE];
+    
+    int gr = get_global_id(0); 
+    int gc = get_global_id(1);
 
-	float sum = bias[index];
+    int lr = get_local_id(0);
+    int lc = get_local_id(1);
 
-    for (int i = 0; i < input_size; i++) {
-        sum += input[token_index * input_size + i] * weights[index * input_size + i];
+    int group_col = get_group_id(1);
+
+    float sum = 0.0f;
+
+    for (int t = 0; t < K; t += TILE_SIZE) {
+        int t_input_col = t + lc;
+
+        l_input[lr][lc] = (gr < M && t_input_col < K) ? input[gr * K + t_input_col] : 0.0f;
+
+        int w_gr = group_col * TILE_SIZE + lr;
+        int w_gc = t + lc;
+
+        l_weight[lc][lr] = (w_gr < N && w_gc < K) ? weights[w_gr * K + w_gc] : 0.0f;
+
+        barrier(CLK_LOCAL_MEM_FENCE);
+
+        #pragma unroll
+        for (int k = 0; k < TILE_SIZE; k++) {
+            sum += l_input[lr][k] * l_weight[k][lc];
+        }
+
+        barrier(CLK_LOCAL_MEM_FENCE);
     }
 
-    output[token_index * output_size + index] = sum;
+    if (gr < M && gc < N) {
+        output[gr * N + gc] = sum + bias[gc];
+    }
 }
 
 __kernel void gelu_activation(__global float* data, const int size) {
