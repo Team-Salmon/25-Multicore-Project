@@ -486,7 +486,7 @@ void ViT_seq_sb(ImageData* image, Network* networks, float** probabilities) {
 		for (int b = 0; b < current_batch_size; b++) {
 			cl_event* ptr = (b < current_batch_size - 1) ? NULL : &done_event[steps];
 
-			err = clEnqueueReadBuffer(ctx.compute_queue, cls_output, CL_TRUE, sizeof(float) * num_classes * b, sizeof(float) * num_classes, 
+			err = clEnqueueReadBuffer(ctx.compute_queue, cls_output, CL_FALSE, sizeof(float) * num_classes * b, sizeof(float) * num_classes, 
                     probabilities[i + b], 0, NULL, ptr); CHECK_ERROR(err); 
 		}
 	}
