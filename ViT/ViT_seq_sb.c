@@ -22,6 +22,8 @@
 #define eps 1e-6
 
 // custom defines
+#define batch_size 4
+
 #define output_size img_size / patch_size
 #define num_patches output_size * output_size
 #define tokens (num_patches + 1)
@@ -32,8 +34,6 @@
 #define hidden_dim (int)(embed_dim * mlp_ratio)
 
 #define enc_size tokens * embed_dim
-
-#define batch_size 4
 
 typedef struct __cl_context {
     cl_platform_id platform;
