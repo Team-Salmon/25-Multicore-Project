@@ -1,4 +1,3 @@
-
 __kernel void linear_layer(
 	__global const float* input,
 	__global float* output,
