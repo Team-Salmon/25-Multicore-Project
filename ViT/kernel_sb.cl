@@ -1,6 +1,3 @@
-#define IMG_SIZE 224
-#define PATCH_SIZE 16
-#define CHANNELS 3
 
 __kernel void linear_layer(
 	__global const float* input,
@@ -37,59 +34,54 @@ __kernel void gelu_activation(__global float* data, const int size) {
 __kernel void attention_score (
     __global const float* QKV,
     __global float* scores,
-    const int tokens,
-    const int head_dim,
-    const int embed_dim,
-    const int head_offset,
-    const int qkv_dim,
-    const int batch_size ) {
+    const int head_offset) {
 
     int i = get_global_id(0); 
     int j = get_global_id(1);
     int b = get_global_id(2);
 
-    if (i >= tokens || j >= tokens || b >= batch_size) return;
+    if (i >= TOKENS || j >= TOKENS || b >= BATCH_SIZE) return;
 
-    int qkv_batch_offset = b * (tokens * qkv_dim);
-    int score_batch_offset = b * (tokens * tokens);
+    int qkv_batch_offset = b * (TOKENS * QKV_DIM);
+    int score_batch_offset = b * (TOKENS * TOKENS);
 
     float score = 0.0f;
-    float scale = 1.0f / sqrt((float)head_dim);
+    float scale = 1.0f / sqrt((float)HEAD_DIM);
 
-    int q_base = qkv_batch_offset + i * qkv_dim + head_offset;
-    int k_base = qkv_batch_offset + j * qkv_dim + embed_dim + head_offset;
+    int q_base = qkv_batch_offset + i * QKV_DIM + head_offset;
+    int k_base = qkv_batch_offset + j * QKV_DIM + EMBED_DIM + head_offset;
 
-    for (int d = 0; d < head_dim; d++) {
+    for (int d = 0; d < HEAD_DIM; d++) {
         float q = QKV[q_base + d];
         float k = QKV[k_base + d];
 
         score += q * k;
     }
 
-    scores[score_batch_offset + i * tokens + j] = score * scale;
+    scores[score_batch_offset + i * TOKENS + j] = score * scale;
 }
 
-__kernel void softmax(__global float* scores, const int tokens, int batch_size) {
+__kernel void softmax(__global float* scores) {
     int row = get_global_id(0);
     
-    if (row >= tokens * batch_size) return;
+    if (row >= TOTAL_TOKENS) return;
 
-    int offset = row * tokens;
+    int offset = row * TOKENS;
 
     float max_val = scores[offset];
-    for (int j = 1; j < tokens; j++) {
+    for (int j = 1; j < TOKENS; j++) {
         float val = scores[offset + j];
         if (val > max_val) max_val = val;
     }
 
     float sum_exp = 0.0f;
-    for (int j = 0; j < tokens; j++) {
+    for (int j = 0; j < TOKENS; j++) {
         float exp_val = exp(scores[offset + j] - max_val);
         scores[offset + j] = exp_val;
         sum_exp += exp_val;
     }
 
-    for (int j = 0; j < tokens; j++) {
+    for (int j = 0; j < TOKENS; j++) {
         scores[offset + j] /= sum_exp;
     }
 }
@@ -98,33 +90,28 @@ __kernel void context (
     __global const float* scores,
     __global const float* QKV,
     __global float* attn_out,
-    const int tokens,
-    const int head_dim,
-    const int embed_dim,
-    const int head_offset,
-    const int qkv_dim,
-    const int batch_size ) {
+    const int head_offset ) {
 
     int i = get_global_id(0);
     int d = get_global_id(1);
     int b = get_global_id(2);
 
-    if (i >= tokens || d >= head_dim || b >= batch_size) return;
+    if (i >= TOKENS || d >= HEAD_DIM || b >= BATCH_SIZE) return;
 
-    int batch_score_offset = b * (tokens * tokens);
-    int batch_qkv_offset = b * (tokens * qkv_dim);
-    int batch_out_offset = b * (tokens * embed_dim);
+    int batch_score_offset = b * (TOKENS * TOKENS);
+    int batch_qkv_offset = b * (TOKENS * QKV_DIM);
+    int batch_out_offset = b * (TOKENS * EMBED_DIM);
 
     float sum = 0.0f;
 
-    for (int j = 0; j < tokens; j++) {
-        float s = scores[batch_score_offset + i * tokens + j];
-        float v = QKV[batch_qkv_offset + j * qkv_dim + (2 * embed_dim) + head_offset + d];
+    for (int j = 0; j < TOKENS; j++) {
+        float s = scores[batch_score_offset + i * TOKENS + j];
+        float v = QKV[batch_qkv_offset + j * QKV_DIM + (2 * EMBED_DIM) + head_offset + d];
 
         sum += s * v;
     }
 
-    int out_idx = batch_out_offset + i * embed_dim + head_offset + d;
+    int out_idx = batch_out_offset + i * EMBED_DIM + head_offset + d;
     attn_out[out_idx] = sum;
 }
 
@@ -132,22 +119,19 @@ __kernel void conv2d (
     __global const float* input,
     __global float* output,
     __global const float* weight,
-    __global const float* bias,
-    const int output_size,
-    const int embed_dim,
-    const int batch_size) {
+    __global const float* bias ) {
 
     int oc = get_global_id(0);
 
     int patch_index = get_global_id(1);
     int batch_index = get_global_id(2);
 
-    int oh = patch_index / output_size;
-    int ow = patch_index % output_size;
+    int oh = patch_index / OUTPUT_SIZE;
+    int ow = patch_index % OUTPUT_SIZE;
 
-    if (oc >= embed_dim || oh >= output_size || ow >= output_size || batch_index >= batch_size) return;
+    if (oc >= EMBED_DIM || oh >= OUTPUT_SIZE || ow >= OUTPUT_SIZE || batch_index >= BATCH_SIZE) return;
 
-    int batch_offset = batch_index * (output_size * output_size * embed_dim);
+    int batch_offset = batch_index * (OUTPUT_SIZE * OUTPUT_SIZE * EMBED_DIM);
 
     float sum = bias[oc];
 
@@ -165,8 +149,8 @@ __kernel void conv2d (
         }
     }
 
-    batch_offset = batch_index * (output_size * output_size * embed_dim);
-    int out_idx = batch_offset + patch_index * embed_dim + oc;
+    batch_offset = batch_index * (OUTPUT_SIZE * OUTPUT_SIZE * EMBED_DIM);
+    int out_idx = batch_offset + patch_index * EMBED_DIM + oc;
     
     output[out_idx] = sum;
 }
@@ -175,30 +159,28 @@ __kernel void layer_norm (
     __global const float* input,
     __global float* output,
     __global const float* weight,
-    __global const float* bias,
-    const int tokens,
-    const int dim) {
+    __global const float* bias ) {
 
     int t = get_global_id(0);
-    if (t >= tokens) return;
+    if (t >= TOTAL_TOKENS) return;
 
-    int offset = t * dim;
+    int offset = t * EMBED_DIM;
 
     float sum = 0.0f;
     float sum_sq = 0.0f;
 
-    for (int i = 0; i < dim; i++) {
+    for (int i = 0; i < EMBED_DIM; i++) {
         float val = input[offset + i];
         sum += val;
         sum_sq += val * val;
     }
 
-    float mean = sum / dim;
-    float var = sum_sq / dim - mean * mean;
+    float mean = sum / EMBED_DIM;
+    float var = sum_sq / EMBED_DIM - mean * mean;
     
     float inv_std = rsqrt(var + 0.000001f);
 
-    for (int i = 0; i < dim; i++) {
+    for (int i = 0; i < EMBED_DIM; i++) {
         float val = input[offset + i];
         output[offset + i] = (val - mean) * inv_std * weight[i] + bias[i];
     }
@@ -220,35 +202,31 @@ __kernel void prepare_input (
     __global const float* patches,
     __global const float* cls_token,
     __global const float* pos_emb,
-    __global float* output,
-    const int dim,
-    const int num_patches ) {
+    __global float* output ) {
 
     int d = get_global_id(0);
     int t = get_global_id(1);
     int b = get_global_id(2);
 
-    if (t >= num_patches + 1) return;
+    if (t >= TOKENS) return;
 
-    int out_idx = b * ((num_patches + 1) * dim) + t * dim + d;
+    int out_idx = b * (TOKENS * EMBED_DIM) + t * EMBED_DIM + d;
     
-    float pos_val = pos_emb[t * dim + d];
-    float token_val = (t == 0) ? cls_token[d] : patches[b * (num_patches * dim) + (t - 1) * dim + d];
+    float pos_val = pos_emb[t * EMBED_DIM + d];
+    float token_val = (t == 0) ? cls_token[d] : patches[b * (NUM_PATCHES * EMBED_DIM) + (t - 1) * EMBED_DIM + d];
 
     output[out_idx] = token_val + pos_val;
 }
 
 __kernel void extract_cls (
     __global const float* input,
-    __global float* output,
-    const int tokens,
-    const int embed_dim ) {
+    __global float* output ) {
 
     int b = get_global_id(0);
     int d = get_global_id(1);
 
-    int src_idx = b * (tokens * embed_dim) + d;
-    int dst_idx = b * embed_dim + d;
+    int src_idx = b * (TOKENS * EMBED_DIM) + d;
+    int dst_idx = b * EMBED_DIM + d;
 
     output[dst_idx] = input[src_idx];
 }
