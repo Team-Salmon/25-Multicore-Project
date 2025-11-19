@@ -61,27 +61,27 @@ __kernel void attention_score (
     scores[score_batch_offset + i * TOKENS + j] = score * scale;
 }
 
-__kernel void softmax(__global float* scores) {
-    int row = get_global_id(0);
-    
-    if (row >= TOTAL_TOKENS) return;
+__kernel void softmax(
+    __global float* scores,
+    const int size ) {
 
-    int offset = row * TOKENS;
+    int row = get_global_id(0);
+    int offset = row * size;
 
     float max_val = scores[offset];
-    for (int j = 1; j < TOKENS; j++) {
+    for (int j = 1; j < size; j++) {
         float val = scores[offset + j];
         if (val > max_val) max_val = val;
     }
 
     float sum_exp = 0.0f;
-    for (int j = 0; j < TOKENS; j++) {
+    for (int j = 0; j < size; j++) {
         float exp_val = exp(scores[offset + j] - max_val);
         scores[offset + j] = exp_val;
         sum_exp += exp_val;
     }
 
-    for (int j = 0; j < TOKENS; j++) {
+    for (int j = 0; j < size; j++) {
         scores[offset + j] /= sum_exp;
     }
 }

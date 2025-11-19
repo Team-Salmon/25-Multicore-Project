@@ -129,7 +129,10 @@ static void multihead_attn(cl_mem input, cl_mem output,
         err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.score_kernel, 3, NULL, score_size, NULL, 0, NULL, NULL); CHECK_ERROR(err);
 
         // Softmax °è»ê
+
+		int token_size = tokens;
         err = clSetKernelArg(ctx.softmax_kernel, 0, sizeof(cl_mem), &scores_buf); CHECK_ERROR(err);
+		err = clSetKernelArg(ctx.softmax_kernel, 1, sizeof(int), &token_size); CHECK_ERROR(err);
 
         size_t soft_size = (size_t)tokens * batch_size;
         err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.softmax_kernel, 1, NULL, &soft_size, NULL, 0, NULL, NULL); CHECK_ERROR(err);
@@ -485,7 +488,9 @@ void ViT_seq_sb(ImageData* image, Network* networks, float** probabilities) {
 
         linear_layer(cls_tokens, cls_output, batch_size, embed_dim, num_classes, networks[150], networks[151]);
 
+		int classes = num_classes;
         err = clSetKernelArg(ctx.softmax_kernel, 0, sizeof(cl_mem), &cls_output); CHECK_ERROR(err);
+		err = clSetKernelArg(ctx.softmax_kernel, 1, sizeof(int), &classes); CHECK_ERROR(err);
 
         size_t soft_size = current_batch_size;
         err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.softmax_kernel, 1, NULL, &soft_size, NULL, 0, NULL, NULL); CHECK_ERROR(err);
