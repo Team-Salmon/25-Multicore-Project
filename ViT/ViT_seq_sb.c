@@ -48,15 +48,15 @@ typedef struct __cl_context {
 
 static CLContext ctx = { 0 };
 
-static void linear_layer_gpu(cl_mem input, cl_mem output, int tokens, int in_features, int out_features, Network weight, Network bias);
-static void add_gpu(cl_mem a, cl_mem b, cl_mem output, int size);
+static void linear_layer(cl_mem input, cl_mem output, int tokens, int in_features, int out_features, Network weight, Network bias);
+static void add(cl_mem a, cl_mem b, cl_mem output, int size);
 
 ////////////////////////////////////// ViT function //////////////////////////////////////
 
 // input : (3, 224, 224)
 // output : (768, 14, 14)
 
-static void Conv2d_gpu(cl_mem input, cl_mem output, Network weight, Network bias, int batch_size) {
+static void Conv2d(cl_mem input, cl_mem output, Network weight, Network bias, int batch_size) {
     int output_size = img_size / patch_size;
     int dim = embed_dim;
 
@@ -79,7 +79,7 @@ static void Conv2d_gpu(cl_mem input, cl_mem output, Network weight, Network bias
     err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.conv2d_kernel, 3, NULL, global_work_size, NULL, 0, NULL, NULL); CHECK_ERROR(err);
 }
 
-static void layer_norm_gpu(cl_mem input, cl_mem ouput, Network weight, Network bias, int batch_size) {
+static void layer_norm(cl_mem input, cl_mem ouput, Network weight, Network bias, int batch_size) {
 	int token = ((img_size / patch_size) * (img_size / patch_size)) + 1;
 	int total_tokens = token * batch_size;
 	int dim = embed_dim;
@@ -97,7 +97,7 @@ static void layer_norm_gpu(cl_mem input, cl_mem ouput, Network weight, Network b
 	err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.normalize_kernel, 1, NULL, &global_work_size, NULL, 0, NULL, NULL); CHECK_ERROR(err);
 }
 
-static void multihead_attn_gpu(cl_mem input, cl_mem output,
+static void multihead_attn(cl_mem input, cl_mem output,
     Network in_weight, Network in_bias, Network out_weight, Network out_bias, int batch_size) {
 
     cl_int err;
@@ -109,7 +109,7 @@ static void multihead_attn_gpu(cl_mem input, cl_mem output,
     int QKV_dim = embed_dim * 3;
 	cl_mem QKV = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE, sizeof(float) * total_token * QKV_dim, NULL, &err); CHECK_ERROR(err);
 
-    linear_layer_gpu(input, QKV, total_token, embed_dim, QKV_dim, in_weight, in_bias);
+    linear_layer(input, QKV, total_token, embed_dim, QKV_dim, in_weight, in_bias);
 
     cl_mem attn_output_buf = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE, sizeof(float) * total_token * embed_dim, NULL, &err); CHECK_ERROR(err);
     cl_mem scores_buf = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE, sizeof(float) * total_token * tokens, NULL, &err); CHECK_ERROR(err);
@@ -165,14 +165,14 @@ static void multihead_attn_gpu(cl_mem input, cl_mem output,
         err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.context_kernel, 3, NULL, context_size, NULL, 0, NULL, NULL); CHECK_ERROR(err);
     }
 
-    linear_layer_gpu(attn_output_buf, output, total_token, embed_dim, embed_dim, out_weight, out_bias);
+    linear_layer(attn_output_buf, output, total_token, embed_dim, embed_dim, out_weight, out_bias);
 
     clReleaseMemObject(scores_buf);
     clReleaseMemObject(QKV);
     clReleaseMemObject(attn_output_buf);
 }
 
-static void gelu_activation_gpu(cl_mem input, int size) {
+static void gelu_activation(cl_mem input, int size) {
 	cl_int err;
 
 	err = clSetKernelArg(ctx.gelu_kernel, 0, sizeof(cl_mem), &input); CHECK_ERROR(err);
@@ -184,7 +184,7 @@ static void gelu_activation_gpu(cl_mem input, int size) {
 	CHECK_ERROR(err);
 }
 
-static void linear_layer_gpu(cl_mem input, cl_mem output, int tokens, int in_features, int out_features, Network weight, Network bias) {
+static void linear_layer(cl_mem input, cl_mem output, int tokens, int in_features, int out_features, Network weight, Network bias) {
 	cl_int err;
 
 	err = clSetKernelArg(ctx.linear_kernel, 0, sizeof(cl_mem), &input); CHECK_ERROR(err);
@@ -200,7 +200,7 @@ static void linear_layer_gpu(cl_mem input, cl_mem output, int tokens, int in_fea
 	err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.linear_kernel, 2, NULL, global_work_size, NULL, 0, NULL, NULL); CHECK_ERROR(err);
 }
 
-static void mlp_block_gpu(cl_mem input, cl_mem output, Network fc1_weight, Network fc1_bias, Network fc2_weight, Network fc2_bias, int batch_size) {
+static void mlp_block(cl_mem input, cl_mem output, Network fc1_weight, Network fc1_bias, Network fc2_weight, Network fc2_bias, int batch_size) {
 	int tokens = ((img_size / patch_size) * (img_size / patch_size)) + 1; //197
 	int total_tokens = tokens * batch_size;
 
@@ -210,14 +210,14 @@ static void mlp_block_gpu(cl_mem input, cl_mem output, Network fc1_weight, Netwo
 	cl_int err;
 	cl_mem fc1_out = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE, sizeof(float) * total_tokens * hidden_dim, NULL, &err); CHECK_ERROR(err);
 
-	linear_layer_gpu(input, fc1_out, total_tokens, embed_dim, hidden_dim, fc1_weight, fc1_bias);
-	gelu_activation_gpu(fc1_out, total_tokens * hidden_dim);
-	linear_layer_gpu(fc1_out, output, total_tokens, hidden_dim, embed_dim, fc2_weight, fc2_bias);
+	linear_layer(input, fc1_out, total_tokens, embed_dim, hidden_dim, fc1_weight, fc1_bias);
+	gelu_activation(fc1_out, total_tokens * hidden_dim);
+	linear_layer(fc1_out, output, total_tokens, hidden_dim, embed_dim, fc2_weight, fc2_bias);
 
 	clReleaseMemObject(fc1_out);
 }
 
-static void Encoder_gpu(cl_mem input, cl_mem output, int batch_size,
+static void Encoder(cl_mem input, cl_mem output, int batch_size,
     Network ln1_w, Network ln1_b, Network attn_w, Network attn_b, Network attn_out_w, Network attn_out_b,
     Network ln2_w, Network ln2_b, Network mlp1_w, Network mlp1_b, Network mlp2_w, Network mlp2_b) {
 
@@ -233,18 +233,18 @@ static void Encoder_gpu(cl_mem input, cl_mem output, int batch_size,
     err = clEnqueueCopyBuffer(ctx.compute_queue, input, output, 0, 0, buffer_bytes, 0, NULL, NULL);
     CHECK_ERROR(err);
 
-    layer_norm_gpu(output, buf, ln1_w, ln1_b, batch_size);
-    multihead_attn_gpu(buf, input, attn_w, attn_b, attn_out_w, attn_out_b, batch_size);
-    add_gpu(output, input, output, total_elements);
+    layer_norm(output, buf, ln1_w, ln1_b, batch_size);
+    multihead_attn(buf, input, attn_w, attn_b, attn_out_w, attn_out_b, batch_size);
+    add(output, input, output, total_elements);
 
-    layer_norm_gpu(output, buf, ln2_w, ln2_b, batch_size);
-    mlp_block_gpu(buf, input, mlp1_w, mlp1_b, mlp2_w, mlp2_b, batch_size);
-    add_gpu(output, input, output, total_elements);
+    layer_norm(output, buf, ln2_w, ln2_b, batch_size);
+    mlp_block(buf, input, mlp1_w, mlp1_b, mlp2_w, mlp2_b, batch_size);
+    add(output, input, output, total_elements);
 
     clReleaseMemObject(buf);
 }
 
-static void add_gpu(cl_mem a, cl_mem b, cl_mem output, int size) {
+static void add(cl_mem a, cl_mem b, cl_mem output, int size) {
     cl_int err;
 
     err = clSetKernelArg(ctx.add_kernel, 0, sizeof(cl_mem), &a); CHECK_ERROR(err);
@@ -256,7 +256,7 @@ static void add_gpu(cl_mem a, cl_mem b, cl_mem output, int size) {
 	err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.add_kernel, 1, NULL, &global_work_size, NULL, 0, NULL, NULL); CHECK_ERROR(err);
 }
 
-static void prepare_input_gpu(cl_mem input, cl_mem cls, cl_mem pos, cl_mem output, int batch_size) {
+static void prepare_input(cl_mem input, cl_mem cls, cl_mem pos, cl_mem output, int batch_size) {
 	cl_int err;
 
 	int dim = embed_dim;
@@ -296,6 +296,12 @@ void ViT_seq_sb(ImageData* image, Network* networks, float** probabilities) {
     err = clGetDeviceIDs(ctx.platform, CL_DEVICE_TYPE_GPU, 1, &ctx.device, NULL); CHECK_ERROR(err);
 
     ctx.context = clCreateContext(NULL, 1, &ctx.device, NULL, NULL, &err); CHECK_ERROR(err);
+
+    cl_queue_properties props[] = {
+        CL_QUEUE_PROPERTIES,
+        CL_QUEUE_PROFILING_ENABLE, 
+        0 
+    };
 
 	ctx.input_queue = clCreateCommandQueueWithProperties(ctx.context, ctx.device, 0, &err); CHECK_ERROR(err);
 	ctx.compute_queue = clCreateCommandQueueWithProperties(ctx.context, ctx.device, 0, &err); CHECK_ERROR(err);
@@ -394,74 +400,74 @@ void ViT_seq_sb(ImageData* image, Network* networks, float** probabilities) {
         input_event = NULL;
 
 		// Patch Embedding
-        Conv2d_gpu(input, buf, networks[1], networks[2], batch_size);
+        Conv2d(input, buf, networks[1], networks[2], batch_size);
 
 		// class token                              ¦¤
 		// class token prepended + patch tokens     ¦¢- in one kernel
         // positional encoding                      ¦¥
-		prepare_input_gpu(buf, networks[0].buffer, networks[3].buffer, layer_buf, batch_size);
+		prepare_input(buf, networks[0].buffer, networks[3].buffer, layer_buf, batch_size);
 
-		Encoder_gpu(layer_buf, enc_buf[0], batch_size,
+		Encoder(layer_buf, enc_buf[0], batch_size,
             networks[4], networks[5], networks[6], networks[7],
             networks[8], networks[9], networks[10], networks[11],
             networks[12], networks[13], networks[14], networks[15]);
 
-		Encoder_gpu(enc_buf[0], enc_buf[1], batch_size,
+		Encoder(enc_buf[0], enc_buf[1], batch_size,
             networks[16], networks[17], networks[18], networks[19],
             networks[20], networks[21], networks[22], networks[23],
             networks[24], networks[25], networks[26], networks[27]);
 
-		Encoder_gpu(enc_buf[1], enc_buf[2], batch_size,
+		Encoder(enc_buf[1], enc_buf[2], batch_size,
             networks[28], networks[29], networks[30], networks[31],
             networks[32], networks[33], networks[34], networks[35],
             networks[36], networks[37], networks[38], networks[39]);
 
-		Encoder_gpu(enc_buf[2], enc_buf[3], batch_size,
+		Encoder(enc_buf[2], enc_buf[3], batch_size,
             networks[40], networks[41], networks[42], networks[43],
             networks[44], networks[45], networks[46], networks[47],
             networks[48], networks[49], networks[50], networks[51]);
 
-		Encoder_gpu(enc_buf[3], enc_buf[4], batch_size,
+		Encoder(enc_buf[3], enc_buf[4], batch_size,
             networks[52], networks[53], networks[54], networks[55],
             networks[56], networks[57], networks[58], networks[59],
             networks[60], networks[61], networks[62], networks[63]);
 
-		Encoder_gpu(enc_buf[4], enc_buf[5], batch_size,
+		Encoder(enc_buf[4], enc_buf[5], batch_size,
             networks[64], networks[65], networks[66], networks[67],
             networks[68], networks[69], networks[70], networks[71],
             networks[72], networks[73], networks[74], networks[75]);
 
-		Encoder_gpu(enc_buf[5], enc_buf[6], batch_size,
+		Encoder(enc_buf[5], enc_buf[6], batch_size,
             networks[76], networks[77], networks[78], networks[79],
             networks[80], networks[81], networks[82], networks[83],
             networks[84], networks[85], networks[86], networks[87]);
 
-		Encoder_gpu(enc_buf[6], enc_buf[7], batch_size,
+		Encoder(enc_buf[6], enc_buf[7], batch_size,
             networks[88], networks[89], networks[90], networks[91],
             networks[92], networks[93], networks[94], networks[95],
             networks[96], networks[97], networks[98], networks[99]);
 
-		Encoder_gpu(enc_buf[7], enc_buf[8], batch_size,
+		Encoder(enc_buf[7], enc_buf[8], batch_size,
             networks[100], networks[101], networks[102], networks[103],
             networks[104], networks[105], networks[106], networks[107],
             networks[108], networks[109], networks[110], networks[111]);
 
-		Encoder_gpu(enc_buf[8], enc_buf[9], batch_size,
+		Encoder(enc_buf[8], enc_buf[9], batch_size,
             networks[112], networks[113], networks[114], networks[115],
             networks[116], networks[117], networks[118], networks[119],
             networks[120], networks[121], networks[122], networks[123]);
 
-		Encoder_gpu(enc_buf[9], enc_buf[10], batch_size,
+		Encoder(enc_buf[9], enc_buf[10], batch_size,
             networks[124], networks[125], networks[126], networks[127],
             networks[128], networks[129], networks[130], networks[131],
             networks[132], networks[133], networks[134], networks[135]);
 
-		Encoder_gpu(enc_buf[10], enc_buf[11], batch_size,
+		Encoder(enc_buf[10], enc_buf[11], batch_size,
             networks[136], networks[137], networks[138], networks[139],
             networks[140], networks[141], networks[142], networks[143],
             networks[144], networks[145], networks[146], networks[147]);
 
-        layer_norm_gpu(enc_buf[11], output, networks[148], networks[149], batch_size);
+        layer_norm(enc_buf[11], output, networks[148], networks[149], batch_size);
 
 		int dim = embed_dim;
 
@@ -478,7 +484,7 @@ void ViT_seq_sb(ImageData* image, Network* networks, float** probabilities) {
         err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.extract_cls_kernel, 2, NULL, global_extract, NULL, 0, NULL, NULL);
         CHECK_ERROR(err);
 
-        linear_layer_gpu(cls_tokens, cls_output, batch_size, embed_dim, num_classes, networks[150], networks[151]);
+        linear_layer(cls_tokens, cls_output, batch_size, embed_dim, num_classes, networks[150], networks[151]);
 
         int classes = num_classes;
         err = clSetKernelArg(ctx.softmax_kernel, 0, sizeof(cl_mem), &cls_output); CHECK_ERROR(err);
