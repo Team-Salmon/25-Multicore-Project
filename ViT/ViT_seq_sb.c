@@ -24,6 +24,7 @@
 // custom defines
 #define batch_size 4
 #define tile_size 16
+#define dfl_ls 256 // default local size
 
 #define output_size img_size / patch_size
 #define num_patches output_size * output_size
@@ -133,6 +134,7 @@ static void multihead_attn(cl_mem input, cl_mem output,
     err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.score_kernel, 3, NULL, global_size_score, NULL, 0, NULL, NULL); CHECK_ERROR(err);
 
     // Softmax °è»ê
+
     int token_size = tokens;
     err = clSetKernelArg(ctx.softmax_kernel, 0, sizeof(cl_mem), &ctx.score_buf); CHECK_ERROR(err);
     err = clSetKernelArg(ctx.softmax_kernel, 1, sizeof(int), &token_size); CHECK_ERROR(err);
@@ -189,10 +191,6 @@ static void linear_layer(cl_mem input, cl_mem output, int token_size, int in_fea
 }
 
 static void mlp_block(cl_mem input, cl_mem output, Network fc1_weight, Network fc1_bias, Network fc2_weight, Network fc2_bias) {
-    cl_int err;
-
-    ctx.fc1_buf = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE, sizeof(float) * total_tokens * hidden_dim, NULL, &err); CHECK_ERROR(err);
-
     linear_layer(input, ctx.fc1_buf, total_tokens, embed_dim, hidden_dim, fc1_weight, fc1_bias);
     gelu_activation(ctx.fc1_buf, total_tokens * hidden_dim);
     linear_layer(ctx.fc1_buf, output, total_tokens, hidden_dim, embed_dim, fc2_weight, fc2_bias);
@@ -207,11 +205,8 @@ static void Encoder(cl_mem input, cl_mem output,
 
     cl_int err;
 
-    cl_mem buf = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE, buffer_bytes, NULL, &err);
-    CHECK_ERROR(err);
-
-    err = clEnqueueCopyBuffer(ctx.compute_queue, input, output, 0, 0, buffer_bytes, 0, NULL, NULL);
-    CHECK_ERROR(err);
+    cl_mem buf = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE, buffer_bytes, NULL, &err); CHECK_ERROR(err);
+    err = clEnqueueCopyBuffer(ctx.compute_queue, input, output, 0, 0, buffer_bytes, 0, NULL, NULL); CHECK_ERROR(err);
 
     layer_norm(output, buf, ln1_w, ln1_b);
     multihead_attn(buf, input, attn_w, attn_b, attn_out_w, attn_out_b);
@@ -290,7 +285,8 @@ static void init_kernel(Network* networks) {
         "-D TOTAL_TOKENS=%d "
         "-D HEAD_DIM=%d "
         "-D QKV_DIM=%d "
-        "-D TILE_SIZE=%d ",
+        "-D TILE_SIZE=%d "
+		"-D DFL_LS=%d ",
         batch_size,
         img_size,
         patch_size,
@@ -303,7 +299,8 @@ static void init_kernel(Network* networks) {
         total_tokens,
         head_dim,
         qkv_dim,
-        tile_size
+        tile_size,
+		dfl_ls
     );
 
     err = clBuildProgram(ctx.program, 1, &ctx.device, build_options, NULL, NULL);
@@ -479,6 +476,7 @@ void ViT_seq_sb(ImageData* image, Network* networks, float** probabilities) {
         err = clSetKernelArg(ctx.softmax_kernel, 1, sizeof(int), &classes); CHECK_ERROR(err);
 
         size_t global_size_softmax = current_batch_size;
+
         err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.softmax_kernel, 1, NULL, &global_size_softmax, NULL, 0, NULL, NULL); CHECK_ERROR(err);
 
         for (int b = 0; b < current_batch_size; b++) {
