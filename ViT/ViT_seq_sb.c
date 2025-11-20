@@ -48,8 +48,11 @@ typedef struct __cl_context {
     cl_program program;
 
     cl_kernel conv2d_kernel;
+    
     cl_kernel linear_kernel;
     cl_kernel gelu_kernel;
+    cl_kernel linear_gelu_kernel;
+
     cl_kernel score_kernel;
     cl_kernel softmax_kernel;
     cl_kernel context_kernel;
@@ -191,9 +194,30 @@ static void linear_layer(cl_mem input, cl_mem output, int token_size, int in_fea
     err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.linear_kernel, 2, NULL, global_size, local_size, 0, NULL, NULL); CHECK_ERROR(err);
 }
 
+static void linear_gelu_layer(cl_mem input, cl_mem output, int token_size, int in_features, int out_features, Network weight, Network bias) {
+    cl_int err;
+
+    err = clSetKernelArg(ctx.linear_gelu_kernel, 0, sizeof(cl_mem), &input); CHECK_ERROR(err);
+    err = clSetKernelArg(ctx.linear_gelu_kernel, 1, sizeof(cl_mem), &output); CHECK_ERROR(err);
+    err = clSetKernelArg(ctx.linear_gelu_kernel, 2, sizeof(cl_mem), &weight.buffer); CHECK_ERROR(err);
+    err = clSetKernelArg(ctx.linear_gelu_kernel, 3, sizeof(cl_mem), &bias.buffer); CHECK_ERROR(err);
+    err = clSetKernelArg(ctx.linear_gelu_kernel, 4, sizeof(int), &token_size); CHECK_ERROR(err);
+    err = clSetKernelArg(ctx.linear_gelu_kernel, 5, sizeof(int), &in_features); CHECK_ERROR(err);
+    err = clSetKernelArg(ctx.linear_gelu_kernel, 6, sizeof(int), &out_features); CHECK_ERROR(err);
+
+    size_t local_size[2] = { tile_size, tile_size };
+    size_t global_size[2] = {
+        (size_t)((token_size + tile_size - 1) / tile_size) * tile_size,
+        (size_t)((out_features + tile_size - 1) / tile_size) * tile_size
+    };
+
+    err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.linear_gelu_kernel, 2, NULL, global_size, local_size, 0, NULL, NULL); CHECK_ERROR(err);
+}
+
 static void mlp_block(cl_mem input, cl_mem output, Network fc1_weight, Network fc1_bias, Network fc2_weight, Network fc2_bias) {
-    linear_layer(input, ctx.fc1_buf, total_tokens, embed_dim, hidden_dim, fc1_weight, fc1_bias);
-    gelu_activation(ctx.fc1_buf, total_tokens * hidden_dim);
+    /*linear_layer(input, ctx.fc1_buf, total_tokens, embed_dim, hidden_dim, fc1_weight, fc1_bias);
+    gelu_activation(ctx.fc1_buf, total_tokens * hidden_dim);*/
+	linear_gelu_layer(input, ctx.fc1_buf, total_tokens, embed_dim, hidden_dim, fc1_weight, fc1_bias);
     linear_layer(ctx.fc1_buf, output, total_tokens, hidden_dim, embed_dim, fc2_weight, fc2_bias);
 }
 
@@ -202,11 +226,11 @@ static void Encoder(cl_mem input, cl_mem output,
     Network ln2_w, Network ln2_b, Network mlp1_w, Network mlp1_b, Network mlp2_w, Network mlp2_b) {
 
     layer_norm(input, ctx.encoder_buf, ln1_w, ln1_b);
-    multihead_attn(ctx.encoder_buf, output, attn_w, attn_b, attn_out_w, attn_out_b);
+    multihead_attn(ctx.encoder_buf, output, attn_w, attn_b, attn_out_w, attn_out_b); // 18ms
     add(input, output, output, batch_size * tokens * embed_dim);
 
     layer_norm(output, ctx.encoder_buf, ln2_w, ln2_b);
-    mlp_block(ctx.encoder_buf, input, mlp1_w, mlp1_b, mlp2_w, mlp2_b);
+    mlp_block(ctx.encoder_buf, input, mlp1_w, mlp1_b, mlp2_w, mlp2_b); // 30ms
     add(output, input, output, batch_size * tokens * embed_dim);
 }
 
@@ -313,8 +337,11 @@ static void init_kernel(Network* networks) {
 
     ctx.conv2d_kernel = clCreateKernel(ctx.program, "conv2d", &err); CHECK_ERROR(err);
     // ctx.linear_kernel = clCreateKernel(ctx.program, "linear_layer", &err); CHECK_ERROR(err);
-	ctx.linear_kernel = clCreateKernel(ctx.program, "linear_layer_vec8", &err); CHECK_ERROR(err);
+	
+    ctx.linear_kernel = clCreateKernel(ctx.program, "linear", &err); CHECK_ERROR(err);
     ctx.gelu_kernel = clCreateKernel(ctx.program, "gelu_activation", &err); CHECK_ERROR(err);
+	ctx.linear_gelu_kernel = clCreateKernel(ctx.program, "linear_gelu", &err); CHECK_ERROR(err);
+
     ctx.score_kernel = clCreateKernel(ctx.program, "attention_score", &err); CHECK_ERROR(err);
     ctx.softmax_kernel = clCreateKernel(ctx.program, "softmax", &err); CHECK_ERROR(err);
     ctx.context_kernel = clCreateKernel(ctx.program, "context", &err); CHECK_ERROR(err);

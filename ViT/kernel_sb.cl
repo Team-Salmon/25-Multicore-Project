@@ -1,4 +1,4 @@
-__kernel void linear_layer_vec8 (
+__kernel void linear (
     __global const float* input,
     __global float* output,
     __global const float* weights,
@@ -17,14 +17,44 @@ __kernel void linear_layer_vec8 (
     
     int weight_offset = out_idx * K;
 
-    for (int k = 0; k < K; k += 8) {
-        float8 in_vec = vload8(0, &input[input_offset + k]);
-        float8 w_vec  = vload8(0, &weights[weight_offset + k]);
+    for (int k = 0; k < K; k += 4) {
+        float4 in_vec = vload4(0, &input[input_offset + k]);
+        float4 w_vec  = vload4(0, &weights[weight_offset + k]);
         
-        sum += dot(in_vec.lo, w_vec.lo) + dot(in_vec.hi, w_vec.hi);
+        sum += dot(in_vec, w_vec);
     }
 
     output[batch_idx * N + out_idx] = sum + bias[out_idx];
+}
+
+__kernel void linear_gelu (
+    __global const float* input,
+    __global float* output,
+    __global const float* weights,
+    __global const float* bias,
+    const int M,
+    const int K,
+    const int N ) {
+
+    int batch_idx = get_global_id(0); 
+    int out_idx = get_global_id(1);
+
+    if (out_idx >= N || batch_idx >= M) return;
+
+    float sum = 0.0f;
+    int input_offset = batch_idx * K;
+    
+    int weight_offset = out_idx * K;
+
+    for (int k = 0; k < K; k += 4) {
+        float4 in_vec = vload4(0, &input[input_offset + k]);
+        float4 w_vec  = vload4(0, &weights[weight_offset + k]);
+        
+        sum += dot(in_vec, w_vec);
+    }
+
+    float x = sum + bias[out_idx];
+    output[batch_idx * N + out_idx] = 0.5f * x * (1.0f + erf(x * 0.70710678f));
 }
 
 __kernel void gelu_activation(__global float* data, const int size) {
@@ -149,7 +179,9 @@ __kernel void conv2d (
     float sum = bias[oc];
 
     for (int ic = 0; ic < CHANNELS; ++ic) {
+        #pragma unroll
         for (int kh = 0; kh < PATCH_SIZE; ++kh) {
+            #pragma unroll
             for (int kw = 0; kw < PATCH_SIZE; ++kw) {
                 int ih = oh * PATCH_SIZE + kh;
                 int iw = ow * PATCH_SIZE + kw;
