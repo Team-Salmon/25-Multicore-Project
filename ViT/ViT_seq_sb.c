@@ -72,6 +72,7 @@ typedef struct __cl_context {
     cl_mem score_buf;
 
 	cl_mem fc1_buf;
+    cl_mem encoder_buf;
 } CLContext;
 
 static CLContext ctx = { 0 };
@@ -200,23 +201,13 @@ static void Encoder(cl_mem input, cl_mem output,
     Network ln1_w, Network ln1_b, Network attn_w, Network attn_b, Network attn_out_w, Network attn_out_b,
     Network ln2_w, Network ln2_b, Network mlp1_w, Network mlp1_b, Network mlp2_w, Network mlp2_b) {
 
-    int total_elements = batch_size * tokens * embed_dim;
-    size_t buffer_bytes = sizeof(float) * total_elements;
+    layer_norm(input, ctx.encoder_buf, ln1_w, ln1_b);
+    multihead_attn(ctx.encoder_buf, output, attn_w, attn_b, attn_out_w, attn_out_b);
+    add(input, output, output, batch_size * tokens * embed_dim);
 
-    cl_int err;
-
-    cl_mem buf = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE, buffer_bytes, NULL, &err); CHECK_ERROR(err);
-    err = clEnqueueCopyBuffer(ctx.compute_queue, input, output, 0, 0, buffer_bytes, 0, NULL, NULL); CHECK_ERROR(err);
-
-    layer_norm(output, buf, ln1_w, ln1_b);
-    multihead_attn(buf, input, attn_w, attn_b, attn_out_w, attn_out_b);
-    add(output, input, output, total_elements);
-
-    layer_norm(output, buf, ln2_w, ln2_b);
-    mlp_block(buf, input, mlp1_w, mlp1_b, mlp2_w, mlp2_b);
-    add(output, input, output, total_elements);
-
-    clReleaseMemObject(buf);
+    layer_norm(output, ctx.encoder_buf, ln2_w, ln2_b);
+    mlp_block(ctx.encoder_buf, input, mlp1_w, mlp1_b, mlp2_w, mlp2_b);
+    add(output, input, output, batch_size * tokens * embed_dim);
 }
 
 static void add(cl_mem a, cl_mem b, cl_mem output, int size) {
@@ -347,6 +338,7 @@ static void init_kernel(Network* networks) {
     ctx.score_buf = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE, sizeof(float) * total_tokens * num_heads * tokens, NULL, &err); CHECK_ERROR(err);
 
     ctx.fc1_buf = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE, sizeof(float) * total_tokens * hidden_dim, NULL, &err); CHECK_ERROR(err);
+	ctx.encoder_buf = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE, sizeof(float) * batch_size * tokens * embed_dim, NULL, &err); CHECK_ERROR(err);
 
     free(kernel_source);
 }
