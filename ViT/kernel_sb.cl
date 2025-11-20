@@ -1,8 +1,8 @@
 __kernel void linear_layer(
     __global const float* input,
     __global float* output,
-    __global const float* weights,
-    __global const float* bias,
+    __constant float* weights,
+    __constant float* bias,
     const int M,
     const int K,
     const int N ) {
@@ -42,6 +42,55 @@ __kernel void linear_layer(
 
     if (gr < M && gc < N) {
         output[gr * N + gc] = sum + bias[gc];
+    }
+}
+
+__kernel void linear_with_gelu (
+    __global const float* input,
+    __global float* output,
+    __constant float* weights,
+    __constant float* bias,
+    const int M,
+    const int K,
+    const int N ) {
+
+    __local float l_input[TILE_SIZE][TILE_SIZE];
+    __local float l_weight[TILE_SIZE][TILE_SIZE];
+    
+    int gr = get_global_id(0); 
+    int gc = get_global_id(1);
+
+    int lr = get_local_id(0);
+    int lc = get_local_id(1);
+
+    int group_col = get_group_id(1);
+
+    float sum = 0.0f;
+
+    for (int t = 0; t < K; t += TILE_SIZE) {
+        int t_input_col = t + lc;
+
+        l_input[lr][lc] = (gr < M && t_input_col < K) ? input[gr * K + t_input_col] : 0.0f;
+
+        int w_gr = group_col * TILE_SIZE + lr;
+        int w_gc = t + lc;
+
+        l_weight[lc][lr] = (w_gr < N && w_gc < K) ? weights[w_gr * K + w_gc] : 0.0f;
+
+        barrier(CLK_LOCAL_MEM_FENCE);
+
+        #pragma unroll
+        for (int k = 0; k < TILE_SIZE; k++) {
+            sum += l_input[lr][k] * l_weight[k][lc];
+        }
+
+        barrier(CLK_LOCAL_MEM_FENCE);
+    }
+
+    if (gr < M && gc < N) {
+        float x = sum + bias[gc];
+
+        output[gr * N + gc] = 0.5f * x * (1.0f + erf(x * 0.70710678f));
     }
 }
 
@@ -140,8 +189,8 @@ __kernel void context (
 __kernel void conv2d (
     __global const float* input,
     __global float* output,
-    __global const float* weight,
-    __global const float* bias ) {
+    __constant float* weight,
+    __constant float* bias ) {
 
     int oc = get_global_id(0);
 
@@ -180,8 +229,8 @@ __kernel void conv2d (
 __kernel void layer_norm (
     __global const float* input,
     __global float* output,
-    __global const float* weight,
-    __global const float* bias ) {
+    __constant float* weight,
+    __constant float* bias ) {
 
     int t = get_global_id(0);
     if (t >= TOTAL_TOKENS) return;
