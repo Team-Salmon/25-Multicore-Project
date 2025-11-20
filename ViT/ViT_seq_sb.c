@@ -121,45 +121,37 @@ static void multihead_attn(cl_mem input, cl_mem output,
     cl_int err;
     linear_layer(input, ctx.qkv_buf, total_tokens, embed_dim, qkv_dim, in_weight, in_bias);
 
-    /*head별로 attn 수행*/
-    for (int h = 0; h < num_heads; h++) {
-        int head_offset = h * head_dim;
+    err = clSetKernelArg(ctx.score_kernel, 0, sizeof(cl_mem), &ctx.qkv_buf); CHECK_ERROR(err);
+    err = clSetKernelArg(ctx.score_kernel, 1, sizeof(cl_mem), &ctx.score_buf); CHECK_ERROR(err);
 
-        // Attention Score 계산
-        err = clSetKernelArg(ctx.score_kernel, 0, sizeof(cl_mem), &ctx.qkv_buf); CHECK_ERROR(err);
-        err = clSetKernelArg(ctx.score_kernel, 1, sizeof(cl_mem), &ctx.score_buf); CHECK_ERROR(err);
-        err = clSetKernelArg(ctx.score_kernel, 2, sizeof(int), &head_offset); CHECK_ERROR(err);
+    size_t global_size_score[3] = {
+        (size_t)tokens,
+        (size_t)tokens,
+		(size_t)batch_size * num_heads
+    };
 
-        size_t global_size_score[3] = {
-            (size_t)tokens,
-            (size_t)tokens,
-            (size_t)batch_size
-        };
+    err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.score_kernel, 3, NULL, global_size_score, NULL, 0, NULL, NULL); CHECK_ERROR(err);
 
-        err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.score_kernel, 3, NULL, global_size_score, NULL, 0, NULL, NULL); CHECK_ERROR(err);
+    // Softmax 계산
+    int token_size = tokens;
+    err = clSetKernelArg(ctx.softmax_kernel, 0, sizeof(cl_mem), &ctx.score_buf); CHECK_ERROR(err);
+    err = clSetKernelArg(ctx.softmax_kernel, 1, sizeof(int), &token_size); CHECK_ERROR(err);
 
-        // Softmax 계산
-        int token_size = tokens;
-        err = clSetKernelArg(ctx.softmax_kernel, 0, sizeof(cl_mem), &ctx.score_buf); CHECK_ERROR(err);
-        err = clSetKernelArg(ctx.softmax_kernel, 1, sizeof(int), &token_size); CHECK_ERROR(err);
+    size_t global_size_softmax = (size_t)tokens * batch_size * num_heads;
+    err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.softmax_kernel, 1, NULL, &global_size_softmax, NULL, 0, NULL, NULL); CHECK_ERROR(err);
 
-        size_t global_size_softmax = (size_t)tokens * batch_size;
-        err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.softmax_kernel, 1, NULL, &global_size_softmax, NULL, 0, NULL, NULL); CHECK_ERROR(err);
+    // Context Vector
+    err = clSetKernelArg(ctx.context_kernel, 0, sizeof(cl_mem), &ctx.score_buf); CHECK_ERROR(err);
+    err = clSetKernelArg(ctx.context_kernel, 1, sizeof(cl_mem), &ctx.qkv_buf); CHECK_ERROR(err);
+    err = clSetKernelArg(ctx.context_kernel, 2, sizeof(cl_mem), &ctx.attn_buf); CHECK_ERROR(err);
 
-        // Context Vector
-        err = clSetKernelArg(ctx.context_kernel, 0, sizeof(cl_mem), &ctx.score_buf); CHECK_ERROR(err);
-        err = clSetKernelArg(ctx.context_kernel, 1, sizeof(cl_mem), &ctx.qkv_buf); CHECK_ERROR(err);
-        err = clSetKernelArg(ctx.context_kernel, 2, sizeof(cl_mem), &ctx.attn_buf); CHECK_ERROR(err);
-        err = clSetKernelArg(ctx.context_kernel, 3, sizeof(int), &head_offset); CHECK_ERROR(err);
+    size_t global_size_context[3] = {
+        (size_t)tokens,
+        (size_t)head_dim,
+        (size_t)batch_size * num_heads
+    };
 
-        size_t global_size_context[3] = {
-            (size_t)tokens,
-            (size_t)head_dim,
-            (size_t)batch_size
-        };
-
-        err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.context_kernel, 3, NULL, global_size_context, NULL, 0, NULL, NULL); CHECK_ERROR(err);
-    }
+    err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.context_kernel, 3, NULL, global_size_context, NULL, 0, NULL, NULL); CHECK_ERROR(err);
 
     linear_layer(ctx.attn_buf, output, total_tokens, embed_dim, embed_dim, out_weight, out_bias);
 }
@@ -332,7 +324,8 @@ static void init_kernel(Network* networks) {
     }
 
     ctx.conv2d_kernel = clCreateKernel(ctx.program, "conv2d", &err); CHECK_ERROR(err);
-    ctx.linear_kernel = clCreateKernel(ctx.program, "linear_layer", &err); CHECK_ERROR(err);
+    // ctx.linear_kernel = clCreateKernel(ctx.program, "linear_layer", &err); CHECK_ERROR(err);
+	ctx.linear_kernel = clCreateKernel(ctx.program, "linear_layer_vec8", &err); CHECK_ERROR(err);
     ctx.gelu_kernel = clCreateKernel(ctx.program, "gelu_activation", &err); CHECK_ERROR(err);
     ctx.score_kernel = clCreateKernel(ctx.program, "attention_score", &err); CHECK_ERROR(err);
     ctx.softmax_kernel = clCreateKernel(ctx.program, "softmax", &err); CHECK_ERROR(err);
@@ -354,7 +347,7 @@ static void init_kernel(Network* networks) {
 
     ctx.qkv_buf = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE, sizeof(float) * total_tokens * qkv_dim, NULL, &err); CHECK_ERROR(err);
     ctx.attn_buf = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE, sizeof(float) * total_tokens * embed_dim, NULL, &err); CHECK_ERROR(err);
-    ctx.score_buf = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE, sizeof(float) * total_tokens * tokens, NULL, &err); CHECK_ERROR(err);
+    ctx.score_buf = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE, sizeof(float) * total_tokens * num_heads * tokens, NULL, &err); CHECK_ERROR(err);
 
     ctx.fc1_buf = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE, sizeof(float) * total_tokens * hidden_dim, NULL, &err); CHECK_ERROR(err);
 
@@ -376,7 +369,7 @@ void ViT_seq_sb(ImageData* image, Network* networks, float** probabilities) {
     for (int i = 0; i < image->n; i += batch_size) {
         steps = i % 2;
 
-        if (done_event[steps]) { // double buffering
+        if (done_event[steps] != NULL) { // double buffering
             clWaitForEvents(1, &done_event[steps]);
 
             clReleaseEvent(done_event[steps]);
@@ -494,6 +487,8 @@ void ViT_seq_sb(ImageData* image, Network* networks, float** probabilities) {
             err = clEnqueueReadBuffer(ctx.compute_queue, ctx.cls_output, CL_FALSE, sizeof(float) * num_classes * b, sizeof(float) * num_classes,
                 probabilities[i + b], 0, NULL, ptr); CHECK_ERROR(err);
         }
+
+		// break; // for test purpose, process only one batch
     }
 
 	if (done_event[steps]) {
