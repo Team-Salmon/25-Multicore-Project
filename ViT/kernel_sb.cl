@@ -65,7 +65,7 @@ __kernel void gelu_activation(__global float* data, const int size) {
     data[i] = 0.5f * x * (1.0f + erf(x * 0.70710678f));
 }
 
-__kernel void attention_score(
+__kernel void attention_score (
     __global const float* QKV,
     __global float* scores ) {
 
@@ -88,11 +88,12 @@ __kernel void attention_score(
 
     float sum = 0.0f;
 
-    for (int d = 0; d < HEAD_DIM; d += 8) {
-        float8 q_vec = vload8(0, &QKV[q_start + d]);
-        float8 k_vec = vload8(0, &QKV[k_start + d]);
+    #pragma unroll
+    for (int d = 0; d < HEAD_DIM; d += 4) {
+        float4 q_vec = vload4(0, &QKV[q_start + d]);
+        float4 k_vec = vload4(0, &QKV[k_start + d]);
         
-        sum += dot(q_vec.lo, k_vec.lo) + dot(q_vec.hi, k_vec.hi);
+        sum += dot(q_vec, k_vec);
     }
 
     int out_idx = (batch_idx * NUM_HEADS + head_idx) * (TOKENS * TOKENS) + (i * TOKENS + j);
@@ -162,7 +163,7 @@ __kernel void conv2d (
     __global const float* input,
     __global float* output,
     __global const float* weight,
-    __global const float* bias ) {
+    __constant float* bias) {
 
     int oc = get_global_id(0);
 
@@ -204,7 +205,7 @@ __kernel void layer_norm (
     __global const float* input,
     __global float* output,
     __global const float* weight,
-    __global const float* bias ) {
+    __constant float* bias) {
 
     int t = get_global_id(0);
     if (t >= TOTAL_TOKENS) return;
