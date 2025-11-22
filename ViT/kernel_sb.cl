@@ -27,7 +27,6 @@ __kernel void linear (
     output[batch_idx * N + out_idx] = sum + bias[out_idx];
 }
 
-/*
 inline float gelu(float x) {
     const float INV_SQRT_2 = 0.70710678f;
 
@@ -46,11 +45,12 @@ inline float gelu(float x) {
     float erf = sign_val * (1.0f - y * t * native_exp(-abs_x * abs_x));
     return 0.5f * x * (1.0f + erf);
 }
-*/
 
+/*
 inline float gelu(float x) {
     return 0.5f * x * (1.0f + erf(x * 0.70710678f));
 }
+*/
 
 __kernel void linear_gelu (
     __global const float* input,
@@ -81,8 +81,6 @@ __kernel void linear_gelu (
     float x = sum + bias[out_idx];    
     output[batch_idx * N + out_idx] = gelu(x);
 }
-
-
 
 __kernel void attention_score (
     __global const float* QKV,

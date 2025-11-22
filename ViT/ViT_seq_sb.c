@@ -23,7 +23,7 @@
 
 // custom defines
 #define batch_size 4
-#define tile_size 32
+#define tile_size 16
 #define dfl_ls 256 // default local size
 
 #define output_size img_size / patch_size
@@ -37,7 +37,7 @@
 
 #define enc_size tokens * embed_dim
 
-#define PROFILE_MODE
+// #define PROFILE_MODE
 
 typedef struct __cl_context {
     cl_platform_id platform;
@@ -187,18 +187,6 @@ static void multihead_attn(cl_mem input, cl_mem output,
     linear_layer(ctx.attn_buf, output, total_tokens, embed_dim, embed_dim, out_weight, out_bias);
 }
 
-//static void gelu_activation(cl_mem input, int size) {
-//    cl_int err;
-//
-//    err = clSetKernelArg(ctx.gelu_kernel, 0, sizeof(cl_mem), &input); CHECK_ERROR(err);
-//    err = clSetKernelArg(ctx.gelu_kernel, 1, sizeof(int), &size); CHECK_ERROR(err);
-//
-//    size_t global_work_size = size;
-//
-//    err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.gelu_kernel, 1, NULL, &global_work_size, NULL, 0, NULL, NULL);
-//    CHECK_ERROR(err);
-//}
-
 static void linear_layer(cl_mem input, cl_mem output, int token_size, int in_features, int out_features, Network weight, Network bias) {
     cl_int err;
 
@@ -323,8 +311,10 @@ static void init_kernel(Network* networks) {
     ctx.context = clCreateContext(NULL, 1, &ctx.device, NULL, NULL, &err); CHECK_ERROR(err);
 
     cl_queue_properties props[] = {
+#ifdef PROFILE_MODE
         CL_QUEUE_PROPERTIES,
         CL_QUEUE_PROFILING_ENABLE,
+#endif
         0
     };
 
