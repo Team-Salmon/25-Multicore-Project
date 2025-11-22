@@ -23,7 +23,7 @@
 
 // custom defines
 #define batch_size 4
-#define tile_size 16
+#define tile_size 32
 #define dfl_ls 256 // default local size
 
 #define output_size img_size / patch_size
@@ -105,7 +105,9 @@ static void Conv2d(cl_mem input, cl_mem output, Network weight, Network bias) {
         (size_t)batch_size
     };
 
-    err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.conv2d_kernel, 3, NULL, global_work_size, NULL, 0, NULL, NULL); CHECK_ERROR(err);
+    cl_event e;
+    err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.conv2d_kernel, 3, NULL, global_work_size, NULL, 0, NULL, &e); CHECK_ERROR(err);
+	profile_event(e, "Conv2d");
 }
 
 static void layer_norm(cl_mem input, cl_mem ouput, Network weight, Network bias) {
@@ -117,7 +119,10 @@ static void layer_norm(cl_mem input, cl_mem ouput, Network weight, Network bias)
     err = clSetKernelArg(ctx.normalize_kernel, 3, sizeof(cl_mem), &bias.buffer); CHECK_ERROR(err);
 
     size_t global_work_size = (size_t)total_tokens;
-    err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.normalize_kernel, 1, NULL, &global_work_size, NULL, 0, NULL, NULL); CHECK_ERROR(err);
+
+	cl_event e;
+    err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.normalize_kernel, 1, NULL, &global_work_size, NULL, 0, NULL, &e); CHECK_ERROR(err);
+	profile_event(e, "LayerNorm");
 }
 
 static void multihead_attn(cl_mem input, cl_mem output,
@@ -135,7 +140,9 @@ static void multihead_attn(cl_mem input, cl_mem output,
 		(size_t)batch_size * num_heads
     };
 
-    err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.score_kernel, 3, NULL, global_size_score, NULL, 0, NULL, NULL); CHECK_ERROR(err);
+    cl_event e;
+    err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.score_kernel, 3, NULL, global_size_score, NULL, 0, NULL, &e); CHECK_ERROR(err);
+	profile_event(e, "Attention Score");
 
     // Softmax °è»ê
 
@@ -144,7 +151,9 @@ static void multihead_attn(cl_mem input, cl_mem output,
     err = clSetKernelArg(ctx.softmax_kernel, 1, sizeof(int), &token_size); CHECK_ERROR(err);
 
     size_t global_size_softmax = (size_t)tokens * batch_size * num_heads;
-    err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.softmax_kernel, 1, NULL, &global_size_softmax, NULL, 0, NULL, NULL); CHECK_ERROR(err);
+
+    err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.softmax_kernel, 1, NULL, &global_size_softmax, NULL, 0, NULL, &e); CHECK_ERROR(err);
+	profile_event(e, "Softmax");
 
     // Context Vector
     err = clSetKernelArg(ctx.context_kernel, 0, sizeof(cl_mem), &ctx.score_buf); CHECK_ERROR(err);
@@ -157,7 +166,8 @@ static void multihead_attn(cl_mem input, cl_mem output,
         (size_t)batch_size * num_heads
     };
 
-    err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.context_kernel, 3, NULL, global_size_context, NULL, 0, NULL, NULL); CHECK_ERROR(err);
+    err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.context_kernel, 3, NULL, global_size_context, NULL, 0, NULL, &e); CHECK_ERROR(err);
+	profile_event(e, "Context Vector");
 
     linear_layer(ctx.attn_buf, output, total_tokens, embed_dim, embed_dim, out_weight, out_bias);
 }
@@ -185,13 +195,19 @@ static void linear_layer(cl_mem input, cl_mem output, int token_size, int in_fea
     err = clSetKernelArg(ctx.linear_kernel, 5, sizeof(int), &in_features); CHECK_ERROR(err);
     err = clSetKernelArg(ctx.linear_kernel, 6, sizeof(int), &out_features); CHECK_ERROR(err);
 
-    size_t local_size[2] = { tile_size, tile_size };
+    // size_t local_size[2] = { tile_size, tile_size };
+    /*size_t global_size[2] = {
+        (size_t)((out_features + tile_size - 1) / tile_size) * tile_size,
+        (size_t)((token_size + tile_size - 1) / tile_size) * tile_size
+    };*/
     size_t global_size[2] = {
-        (size_t)((token_size + tile_size - 1) / tile_size) * tile_size,
-        (size_t)((out_features + tile_size - 1) / tile_size) * tile_size
-    };
+        (size_t)token_size,
+        (size_t)out_features,
+	};
 
-    err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.linear_kernel, 2, NULL, global_size, local_size, 0, NULL, NULL); CHECK_ERROR(err);
+    cl_event e;
+    err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.linear_kernel, 2, NULL, global_size, /*local_size*/ NULL, 0, NULL, &e); CHECK_ERROR(err);
+	profile_event(e, "Linear Layer");
 }
 
 static void linear_gelu_layer(cl_mem input, cl_mem output, int token_size, int in_features, int out_features, Network weight, Network bias) {
@@ -205,18 +221,22 @@ static void linear_gelu_layer(cl_mem input, cl_mem output, int token_size, int i
     err = clSetKernelArg(ctx.linear_gelu_kernel, 5, sizeof(int), &in_features); CHECK_ERROR(err);
     err = clSetKernelArg(ctx.linear_gelu_kernel, 6, sizeof(int), &out_features); CHECK_ERROR(err);
 
-    size_t local_size[2] = { tile_size, tile_size };
+    /*size_t local_size[2] = { tile_size, tile_size };
     size_t global_size[2] = {
         (size_t)((token_size + tile_size - 1) / tile_size) * tile_size,
         (size_t)((out_features + tile_size - 1) / tile_size) * tile_size
+    };*/
+    size_t global_size[2] = {
+        (size_t)token_size,
+        (size_t)out_features,
     };
 
-    err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.linear_gelu_kernel, 2, NULL, global_size, local_size, 0, NULL, NULL); CHECK_ERROR(err);
+    cl_event e;
+    err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.linear_gelu_kernel, 2, NULL, global_size, /*local_size*/ NULL, 0, NULL, &e); CHECK_ERROR(err);
+	profile_event(e, "Linear-GELU Layer");
 }
 
 static void mlp_block(cl_mem input, cl_mem output, Network fc1_weight, Network fc1_bias, Network fc2_weight, Network fc2_bias) {
-    /*linear_layer(input, ctx.fc1_buf, total_tokens, embed_dim, hidden_dim, fc1_weight, fc1_bias);
-    gelu_activation(ctx.fc1_buf, total_tokens * hidden_dim);*/
 	linear_gelu_layer(input, ctx.fc1_buf, total_tokens, embed_dim, hidden_dim, fc1_weight, fc1_bias);
     linear_layer(ctx.fc1_buf, output, total_tokens, hidden_dim, embed_dim, fc2_weight, fc2_bias);
 }
@@ -243,7 +263,10 @@ static void add(cl_mem a, cl_mem b, cl_mem output, int size) {
     err = clSetKernelArg(ctx.add_kernel, 3, sizeof(int), &size); CHECK_ERROR(err);
 
     size_t global_work_size = (size_t)size;
-    err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.add_kernel, 1, NULL, &global_work_size, NULL, 0, NULL, NULL); CHECK_ERROR(err);
+
+    cl_event e;
+    err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.add_kernel, 1, NULL, &global_work_size, NULL, 0, NULL, &e); CHECK_ERROR(err);
+	profile_event(e, "Add");
 }
 
 static void prepare_input(cl_mem input, cl_mem cls, cl_mem pos, cl_mem output) {
@@ -260,7 +283,9 @@ static void prepare_input(cl_mem input, cl_mem cls, cl_mem pos, cl_mem output) {
         (size_t)batch_size
     };
 
-    err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.prepare_kernel, 3, NULL, global_work_size, NULL, 0, NULL, NULL);
+    cl_event e;
+    err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.prepare_kernel, 3, NULL, global_work_size, NULL, 0, NULL, &e);
+	profile_event(e, "Prepare Input");
     CHECK_ERROR(err);
 }
 
@@ -273,8 +298,8 @@ static void init_kernel(Network* networks) {
     ctx.context = clCreateContext(NULL, 1, &ctx.device, NULL, NULL, &err); CHECK_ERROR(err);
 
     cl_queue_properties props[] = {
-        /*CL_QUEUE_PROPERTIES,
-        CL_QUEUE_PROFILING_ENABLE,*/
+        CL_QUEUE_PROPERTIES,
+        CL_QUEUE_PROFILING_ENABLE,
         0
     };
 
@@ -382,6 +407,8 @@ void ViT_seq_sb(ImageData* image, Network* networks, float** probabilities) {
 
     cl_event input_event = NULL, done_event[2] = { NULL, NULL };
 
+    init_profiler();
+
     for (int i = 0; i < image->n; i += batch_size) {
         steps = i % 2;
 
@@ -476,6 +503,8 @@ void ViT_seq_sb(ImageData* image, Network* networks, float** probabilities) {
             networks[140], networks[141], networks[142], networks[143],
             networks[144], networks[145], networks[146], networks[147]);
 
+		clFinish(ctx.compute_queue);
+
         layer_norm(ctx.enc_buf[1], ctx.enc_buf[0], networks[148], networks[149]);
 
         err = clSetKernelArg(ctx.extract_cls_kernel, 0, sizeof(cl_mem), &ctx.enc_buf[0]); CHECK_ERROR(err);
@@ -486,7 +515,9 @@ void ViT_seq_sb(ImageData* image, Network* networks, float** probabilities) {
             (size_t)embed_dim
         };
 
-        err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.extract_cls_kernel, 2, NULL, global_size_extract_cls, NULL, 0, NULL, NULL); CHECK_ERROR(err);
+        cl_event e;
+        err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.extract_cls_kernel, 2, NULL, global_size_extract_cls, NULL, 0, NULL, &e); CHECK_ERROR(err);
+		profile_event(e, "Extract CLS Token");
 
         linear_layer(ctx.cls_tokens, ctx.cls_output, batch_size, embed_dim, num_classes, networks[150], networks[151]);
 
@@ -496,7 +527,8 @@ void ViT_seq_sb(ImageData* image, Network* networks, float** probabilities) {
 
         size_t global_size_softmax = current_batch_size;
 
-        err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.softmax_kernel, 1, NULL, &global_size_softmax, NULL, 0, NULL, NULL); CHECK_ERROR(err);
+        err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.softmax_kernel, 1, NULL, &global_size_softmax, NULL, 0, NULL, &e); CHECK_ERROR(err);
+		profile_event(e, "Output Softmax");
 
         for (int b = 0; b < current_batch_size; b++) {
             cl_event* ptr = (b < current_batch_size - 1) ? NULL : &done_event[steps];
@@ -507,6 +539,9 @@ void ViT_seq_sb(ImageData* image, Network* networks, float** probabilities) {
 
 		// break; // for test purpose, process only one batch
     }
+
+	clFinish(ctx.compute_queue);
+    print_profiler_stats();
 
 	if (done_event[steps]) {
 		clWaitForEvents(1, &done_event[steps]);
