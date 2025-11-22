@@ -210,18 +210,19 @@ static void linear_layer(cl_mem input, cl_mem output, int token_size, int in_fea
     err = clSetKernelArg(ctx.linear_kernel, 5, sizeof(int), &in_features); CHECK_ERROR(err);
     err = clSetKernelArg(ctx.linear_kernel, 6, sizeof(int), &out_features); CHECK_ERROR(err);
 
-    // size_t local_size[2] = { tile_size, tile_size };
-    /*size_t global_size[2] = {
-        (size_t)((out_features + tile_size - 1) / tile_size) * tile_size,
-        (size_t)((token_size + tile_size - 1) / tile_size) * tile_size
-    };*/
+    size_t local_size[2] = { tile_size, tile_size };
     size_t global_size[2] = {
+        (size_t)((token_size + tile_size - 1) / tile_size) * tile_size,
+        (size_t)((out_features + tile_size - 1) / tile_size) * tile_size
+    };
+
+    /*size_t global_size[2] = {
         (size_t)token_size,
         (size_t)out_features,
-	};
+	};*/
 
     
-    err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.linear_kernel, 2, NULL, global_size, /*local_size*/ NULL, 0, NULL, ctx.evt_ptr); CHECK_ERROR(err);
+    err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.linear_kernel, 2, NULL, global_size, local_size, 0, NULL, ctx.evt_ptr); CHECK_ERROR(err);
 #ifdef PROFILE_MODE
 	profile_event(*ctx.evt_ptr, "Linear Layer");
 #endif
@@ -238,18 +239,19 @@ static void linear_gelu_layer(cl_mem input, cl_mem output, int token_size, int i
     err = clSetKernelArg(ctx.linear_gelu_kernel, 5, sizeof(int), &in_features); CHECK_ERROR(err);
     err = clSetKernelArg(ctx.linear_gelu_kernel, 6, sizeof(int), &out_features); CHECK_ERROR(err);
 
-    /*size_t local_size[2] = { tile_size, tile_size };
+    size_t local_size[2] = { tile_size, tile_size };
     size_t global_size[2] = {
         (size_t)((token_size + tile_size - 1) / tile_size) * tile_size,
         (size_t)((out_features + tile_size - 1) / tile_size) * tile_size
-    };*/
-    size_t global_size[2] = {
-        (size_t)token_size,
-        (size_t)out_features,
     };
 
+    /*size_t global_size[2] = {
+        (size_t)token_size,
+        (size_t)out_features,
+    };*/
+
     
-    err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.linear_gelu_kernel, 2, NULL, global_size, /*local_size*/ NULL, 0, NULL, ctx.evt_ptr); CHECK_ERROR(err);
+    err = clEnqueueNDRangeKernel(ctx.compute_queue, ctx.linear_gelu_kernel, 2, NULL, global_size, local_size, 0, NULL, ctx.evt_ptr); CHECK_ERROR(err);
 #ifdef PROFILE_MODE
 	profile_event(*ctx.evt_ptr, "Linear-GELU Layer");
 #endif
