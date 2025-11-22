@@ -27,25 +27,29 @@ __kernel void linear (
     output[batch_idx * N + out_idx] = sum + bias[out_idx];
 }
 
+/*
 inline float gelu(float x) {
-    const float INV_SQRT_2 = 0.70710678f; /* 1 / sqrt(2) */
+    const float INV_SQRT_2 = 0.70710678f;
+
+    const float p  = 0.3275911f;
+    const float a1 = 0.254829592f;
+    const float a2 = -0.284496736f;
+    const float a3 = 1.421413741f;
+    const float a4 = -1.453152027f;
+    const float a5 = 1.061405429f;
+
     float scaled_x = x * INV_SQRT_2;
-    
-    float val = (scaled_x >= 0.0f) ? 1.0f : -1.0f;
     float abs_x = fabs(scaled_x);
-
-    const float p = 0.3275911f;
-    const float c0 = 0.254829592f;
-    const float c1 = -0.284496736f;
-    const float c2 = 1.421413741f;
-    const float c3 = -1.453152027f;
-    const float c4 = 1.061405429f;
-
-    float poly_var_t = 1.0f / (1.0f + p * abs_x);
-    float poly_result = ((((c4 * poly_var_t + c3) * poly_var_t) + c2) * poly_var_t + c1) * poly_var_t + c0;
-    float erf = val * (1.0f - poly_result * poly_var_t * native_exp(-abs_x * abs_x));
-
+    float sign_val = (scaled_x >= 0.0f) ? 1.0f : -1.0f;
+    float t = native_recip(1.0f + p * abs_x);
+    float y = ((((a5 * t + a4) * t) + a3) * t + a2) * t + a1;
+    float erf = sign_val * (1.0f - y * t * native_exp(-abs_x * abs_x));
     return 0.5f * x * (1.0f + erf);
+}
+*/
+
+inline float gelu(float x) {
+    return 0.5f * x * (1.0f + erf(x * 0.70710678f));
 }
 
 __kernel void linear_gelu (
@@ -77,6 +81,8 @@ __kernel void linear_gelu (
     float x = sum + bias[out_idx];    
     output[batch_idx * N + out_idx] = gelu(x);
 }
+
+
 
 __kernel void attention_score (
     __global const float* QKV,
