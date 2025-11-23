@@ -128,10 +128,9 @@ static void layer_norm(cl_mem input, cl_mem ouput, Network weight, Network bias)
     err = clSetKernelArg(ctx.k_layernorm, 2, sizeof(cl_mem), &weight.buffer); CHECK_ERROR(err);
     err = clSetKernelArg(ctx.k_layernorm, 3, sizeof(cl_mem), &bias.buffer); CHECK_ERROR(err);
 
-    size_t global_work_size = (size_t)total_tokens;
-
+    size_t gws_layernorm = (size_t)total_tokens;
 	
-    err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_layernorm, 1, NULL, &global_work_size, NULL, 0, NULL, ctx.evt_ptr); CHECK_ERROR(err);
+    err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_layernorm, 1, NULL, &gws_layernorm, NULL, 0, NULL, ctx.evt_ptr); CHECK_ERROR(err);
 #ifdef PROFILE_MODE
 	profile_event(*ctx.evt_ptr, "LayerNorm");
 #endif
@@ -146,14 +145,13 @@ static void multihead_attn(cl_mem input, cl_mem output,
     err = clSetKernelArg(ctx.k_attn_score, 0, sizeof(cl_mem), &ctx.d_qkv); CHECK_ERROR(err);
     err = clSetKernelArg(ctx.k_attn_score, 1, sizeof(cl_mem), &ctx.d_attn_map); CHECK_ERROR(err);
 
-    size_t global_size_score[3] = {
+    size_t gws_attn_score[3] = {
         (size_t)tokens,
         (size_t)tokens,
 		(size_t)batch_size * num_heads
     };
-
     
-    err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_attn_score, 3, NULL, global_size_score, NULL, 0, NULL, ctx.evt_ptr); CHECK_ERROR(err);
+    err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_attn_score, 3, NULL, gws_attn_score, NULL, 0, NULL, ctx.evt_ptr); CHECK_ERROR(err);
 #ifdef PROFILE_MODE
 	profile_event(*ctx.evt_ptr, "Attention Score");
 #endif
@@ -164,9 +162,9 @@ static void multihead_attn(cl_mem input, cl_mem output,
     err = clSetKernelArg(ctx.k_softmax, 0, sizeof(cl_mem), &ctx.d_attn_map); CHECK_ERROR(err);
     err = clSetKernelArg(ctx.k_softmax, 1, sizeof(int), &token_size); CHECK_ERROR(err);
 
-    size_t global_size_softmax = (size_t)tokens * batch_size * num_heads;
+    size_t gws_softmax = (size_t)tokens * batch_size * num_heads;
 
-    err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_softmax, 1, NULL, &global_size_softmax, NULL, 0, NULL, ctx.evt_ptr); CHECK_ERROR(err);
+    err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_softmax, 1, NULL, &gws_softmax, NULL, 0, NULL, ctx.evt_ptr); CHECK_ERROR(err);
 #ifdef PROFILE_MODE
 	profile_event(*ctx.evt_ptr, "Softmax");
 #endif
@@ -176,13 +174,13 @@ static void multihead_attn(cl_mem input, cl_mem output,
     err = clSetKernelArg(ctx.k_attn_context, 1, sizeof(cl_mem), &ctx.d_qkv); CHECK_ERROR(err);
     err = clSetKernelArg(ctx.k_attn_context, 2, sizeof(cl_mem), &ctx.d_context_vec); CHECK_ERROR(err);
 
-    size_t global_size_context[3] = {
+    size_t gws[3] = {
         (size_t)tokens,
         (size_t)head_dim,
         (size_t)batch_size * num_heads
     };
 
-    err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_attn_context, 3, NULL, global_size_context, NULL, 0, NULL, ctx.evt_ptr); CHECK_ERROR(err);
+    err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_attn_context, 3, NULL, gws, NULL, 0, NULL, ctx.evt_ptr); CHECK_ERROR(err);
 #ifdef PROFILE_MODE
 	profile_event(*ctx.evt_ptr, "Context Vector");
 #endif
@@ -201,11 +199,11 @@ static void linear_layer(cl_mem input, cl_mem output, int token_size, int in_fea
     err = clSetKernelArg(ctx.k_linear, 5, sizeof(int), &in_features); CHECK_ERROR(err);
     err = clSetKernelArg(ctx.k_linear, 6, sizeof(int), &out_features); CHECK_ERROR(err);
 
-    size_t global_size[2] = { token_size, out_features };
+    size_t gws[2] = { token_size, out_features };
 
-	padding_size(global_size, ctx.lws_linear, 2);
+	padding_size(gws, ctx.lws_linear, 2);
     
-    err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_linear, 2, NULL, global_size, ctx.lws_linear, 0, NULL, ctx.evt_ptr); CHECK_ERROR(err);
+    err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_linear, 2, NULL, gws, ctx.lws_linear, 0, NULL, ctx.evt_ptr); CHECK_ERROR(err);
 #ifdef PROFILE_MODE
 	profile_event(*ctx.evt_ptr, "Linear Layer");
 #endif
@@ -222,11 +220,11 @@ static void linear_gelu_layer(cl_mem input, cl_mem output, int token_size, int i
     err = clSetKernelArg(ctx.k_linear_gelu, 5, sizeof(int), &in_features); CHECK_ERROR(err);
     err = clSetKernelArg(ctx.k_linear_gelu, 6, sizeof(int), &out_features); CHECK_ERROR(err);
 
-    size_t global_size[2] = { token_size, out_features };
+    size_t gws[2] = { token_size, out_features };
 
-    padding_size(global_size, ctx.lws_linear, 2);
+    padding_size(gws, ctx.lws_linear, 2);
     
-    err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_linear_gelu, 2, NULL, global_size, ctx.lws_linear, 0, NULL, ctx.evt_ptr); CHECK_ERROR(err);
+    err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_linear_gelu, 2, NULL, gws, ctx.lws_linear, 0, NULL, ctx.evt_ptr); CHECK_ERROR(err);
 #ifdef PROFILE_MODE
 	profile_event(*ctx.evt_ptr, "Linear-GELU Layer");
 #endif
@@ -258,10 +256,9 @@ static void add(cl_mem a, cl_mem b, cl_mem output, int size) {
     err = clSetKernelArg(ctx.k_add, 2, sizeof(cl_mem), &output); CHECK_ERROR(err);
     err = clSetKernelArg(ctx.k_add, 3, sizeof(int), &size); CHECK_ERROR(err);
 
-    size_t global_work_size = (size_t)size;
-
+    size_t gws = (size_t)size;
     
-    err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_add, 1, NULL, &global_work_size, NULL, 0, NULL, ctx.evt_ptr); CHECK_ERROR(err);
+    err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_add, 1, NULL, &gws, NULL, 0, NULL, ctx.evt_ptr); CHECK_ERROR(err);
 #ifdef PROFILE_MODE
 	profile_event(*ctx.evt_ptr, "Add");
 #endif
@@ -275,13 +272,13 @@ static void pos_embedding(cl_mem input, cl_mem cls, cl_mem pos, cl_mem output) {
     err = clSetKernelArg(ctx.k_pos_emb, 2, sizeof(cl_mem), &pos); CHECK_ERROR(err);
     err = clSetKernelArg(ctx.k_pos_emb, 3, sizeof(cl_mem), &output); CHECK_ERROR(err);
 
-    size_t global_work_size[3] = {
+    size_t gws[3] = {
         (size_t)embed_dim,
         (size_t)tokens,
         (size_t)batch_size
     };
     
-    err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_pos_emb, 3, NULL, global_work_size, NULL, 0, NULL, ctx.evt_ptr);
+    err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_pos_emb, 3, NULL, gws, NULL, 0, NULL, ctx.evt_ptr);
     CHECK_ERROR(err);
 
 #ifdef PROFILE_MODE
@@ -381,8 +378,8 @@ static void init_kernel(Network* networks) {
     ctx.d_patch       = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE, sizeof(float) * batch_size * embed_dim * num_patches, NULL, &err); CHECK_ERROR(err);
     ctx.d_input_embed = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE, sizeof(float) * batch_size * embed_dim * tokens, NULL, &err); CHECK_ERROR(err);
 
-    ctx.d_hidden[0] = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE, sizeof(float) * batch_size * enc_size, NULL, &err); CHECK_ERROR(err);
-    ctx.d_hidden[1] = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE, sizeof(float) * batch_size * enc_size, NULL, &err); CHECK_ERROR(err);
+    ctx.d_hidden[0]   = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE, sizeof(float) * batch_size * enc_size, NULL, &err); CHECK_ERROR(err);
+    ctx.d_hidden[1]   = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE, sizeof(float) * batch_size * enc_size, NULL, &err); CHECK_ERROR(err);
 
     ctx.d_qkv         = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE, sizeof(float) * total_tokens * qkv_dim, NULL, &err); CHECK_ERROR(err);
     ctx.d_context_vec = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE, sizeof(float) * total_tokens * embed_dim, NULL, &err); CHECK_ERROR(err);
@@ -521,12 +518,12 @@ void ViT_seq_sb(ImageData* image, Network* networks, float** probabilities) {
         err = clSetKernelArg(ctx.k_extract_cls, 0, sizeof(cl_mem), &ctx.d_hidden[0]); CHECK_ERROR(err);
         err = clSetKernelArg(ctx.k_extract_cls, 1, sizeof(cl_mem), &ctx.d_cls_tokens); CHECK_ERROR(err);
 
-        size_t global_size_extract_cls[2] = {
+        size_t gws_extract_cls[2] = {
             (size_t)batch_size,
             (size_t)embed_dim
         };
         
-        err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_extract_cls, 2, NULL, global_size_extract_cls, NULL, 0, NULL, ctx.evt_ptr); CHECK_ERROR(err);
+        err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_extract_cls, 2, NULL, gws_extract_cls, NULL, 0, NULL, ctx.evt_ptr); CHECK_ERROR(err);
 #ifdef PROFILE_MODE
         profile_event(*ctx.evt_ptr, "Extract CLS Token");
 #endif
