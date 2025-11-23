@@ -554,16 +554,16 @@ void ViT_seq_sb(ImageData* image, Network* networks, float** probabilities) {
 		// break; // for test purpose, process only one batch
     }
 
-#ifdef PROFILE_MODE
-	clFinish(ctx.compute_queue);
-    print_profiler_stats();
-#endif
-
 	if (evt_done[steps]) {
 		clWaitForEvents(1, &evt_done[steps]);
 		clReleaseEvent(evt_done[steps]);
 		evt_done[steps] = NULL;
 	}
+
+#ifdef PROFILE_MODE
+    clFinish(ctx.compute_queue);
+    print_profiler_stats();
+#endif
 
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
