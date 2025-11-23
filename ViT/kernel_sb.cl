@@ -82,7 +82,7 @@ __kernel void linear_gelu (
     output[batch_idx * N + out_idx] = gelu(x);
 }
 
-__kernel void attention_score (
+__kernel void attn_score (
     __global const float* QKV,
     __global float* scores ) {
 
@@ -144,7 +144,7 @@ __kernel void softmax (
     }
 }
 
-__kernel void context(
+__kernel void attn_context(
     __global const float* scores,
     __global const float* QKV,
     __global float* attn_out)  {
@@ -176,7 +176,7 @@ __kernel void context(
     attn_out[out_idx] = sum;
 }
 
-__kernel void conv2d (
+__kernel void patch_embedding (
     __global const float* input,
     __global float* output,
     __global const float* weight,
@@ -261,7 +261,8 @@ __kernel void add (
     output[i] = a[i] + b[i];
 }
 
-__kernel void prepare_input (
+// cls token + position embedding
+__kernel void pos_embedding (
     __global const float* patches,
     __global const float* cls_token,
     __global const float* pos_emb,
