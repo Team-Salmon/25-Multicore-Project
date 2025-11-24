@@ -1,63 +1,122 @@
-__kernel void linear_layer(
+__kernel void linear(
     __global const float* input,
     __global float* output,
     __global const float* weights,
     __global const float* bias,
-    const int token_size,
-    const int input_size,
-    const int output_size) {
+    const int M,
+    const int K,
+    const int N) {
 
-    int token_index = get_global_id(0);
-    int index = get_global_id(1);
+    int batch_idx = get_global_id(0);
+    int out_idx = get_global_id(1);
 
-    if (token_index >= token_size) return;
-    if (index >= output_size) return;
+    if (out_idx >= N || batch_idx >= M) return;
 
-    float sum = bias[index];
+    float sum = 0.0f;
+    int input_offset = batch_idx * K;
 
-    for (int i = 0; i < input_size; i++) {
-        sum += input[token_index * input_size + i] * weights[index * input_size + i];
+    int weight_offset = out_idx * K;
+
+    for (int k = 0; k < K; k += 4) {
+        float4 in_vec = vload4(0, &input[input_offset + k]);
+        float4 w_vec = vload4(0, &weights[weight_offset + k]);
+
+        sum += dot(in_vec, w_vec);
     }
 
-    output[token_index * output_size + index] = sum;
+    output[batch_idx * N + out_idx] = sum + bias[out_idx];
 }
 
-__kernel void gelu_activation(__global float* data, const int size) {
-    int i = get_global_id(0);
-    if (i >= size) return;
+inline float gelu(float x) {
+    const float INV_SQRT_2 = 0.70710678f;
 
-    float x = data[i];
-    data[i] = 0.5f * x * (1.0f + erf(x * 0.70710678f));
+    const float p = 0.3275911f;
+    const float a1 = 0.254829592f;
+    const float a2 = -0.284496736f;
+    const float a3 = 1.421413741f;
+    const float a4 = -1.453152027f;
+    const float a5 = 1.061405429f;
+
+    float scaled_x = x * INV_SQRT_2;
+    float abs_x = fabs(scaled_x);
+    float sign_val = (scaled_x >= 0.0f) ? 1.0f : -1.0f;
+    float t = native_recip(1.0f + p * abs_x);
+    float y = ((((a5 * t + a4) * t) + a3) * t + a2) * t + a1;
+    float erf = sign_val * (1.0f - y * t * native_exp(-abs_x * abs_x));
+    return 0.5f * x * (1.0f + erf);
 }
 
-__kernel void attention_score(
+/*
+inline float gelu(float x) {
+    return 0.5f * x * (1.0f + erf(x * 0.70710678f));
+}
+*/
+
+__kernel void linear_gelu(
+    __global const float* input,
+    __global float* output,
+    __global const float* weights,
+    __global const float* bias,
+    const int M,
+    const int K,
+    const int N) {
+
+    int batch_idx = get_global_id(0);
+    int out_idx = get_global_id(1);
+
+    if (out_idx >= N || batch_idx >= M) return;
+
+    float sum = 0.0f;
+    int input_offset = batch_idx * K;
+
+    int weight_offset = out_idx * K;
+
+    for (int k = 0; k < K; k += 4) {
+        float4 in_vec = vload4(0, &input[input_offset + k]);
+        float4 w_vec = vload4(0, &weights[weight_offset + k]);
+
+        sum += dot(in_vec, w_vec);
+    }
+
+    float x = sum + bias[out_idx];
+    output[batch_idx * N + out_idx] = gelu(x);
+}
+
+__kernel void attn_score(
     __global const float* QKV,
-    __global float* scores,
-    const int head_offset) {
+    __global float* scores) {
 
     int i = get_global_id(0);
     int j = get_global_id(1);
-    int b = get_global_id(2);
+    int z = get_global_id(2);
 
-    if (i >= TOKENS || j >= TOKENS || b >= BATCH_SIZE) return;
+    int batch_idx = z / NUM_HEADS;
+    int head_idx = z % NUM_HEADS;
 
-    int qkv_batch_offset = b * (TOKENS * QKV_DIM);
-    int score_batch_offset = b * (TOKENS * TOKENS);
+    if (i >= TOKENS || j >= TOKENS || batch_idx >= BATCH_SIZE) return;
 
-    float score = 0.0f;
-    float scale = 1.0f / sqrt((float)HEAD_DIM);
+    int head_offset = head_idx * HEAD_DIM;
 
-    int q_base = qkv_batch_offset + i * QKV_DIM + head_offset;
-    int k_base = qkv_batch_offset + j * QKV_DIM + EMBED_DIM + head_offset;
+    int token_offset_q = (batch_idx * TOKENS + i) * QKV_DIM; // QKV_DIM = 768 * 3
+    int token_offset_k = (batch_idx * TOKENS + j) * QKV_DIM;
 
-    for (int d = 0; d < HEAD_DIM; d++) {
-        float q = QKV[q_base + d];
-        float k = QKV[k_base + d];
+    int q_start = token_offset_q + head_offset;
+    int k_start = token_offset_k + EMBED_DIM + head_offset;
 
-        score += q * k;
+    float sum = 0.0f;
+
+#pragma unroll
+    for (int d = 0; d < HEAD_DIM; d += 4) {
+        float4 q_vec = vload4(0, &QKV[q_start + d]);
+        float4 k_vec = vload4(0, &QKV[k_start + d]);
+
+        sum += dot(q_vec, k_vec);
     }
 
-    scores[score_batch_offset + i * TOKENS + j] = score * scale;
+    int out_idx = (batch_idx * NUM_HEADS + head_idx) * (TOKENS * TOKENS) + (i * TOKENS + j);
+
+    float scale = 1.0f / sqrt((float)HEAD_DIM);
+    scores[out_idx] = sum * scale;
 }
 
 __kernel void softmax(
@@ -85,40 +144,43 @@ __kernel void softmax(
     }
 }
 
-__kernel void context(
+__kernel void attn_context(
     __global const float* scores,
     __global const float* QKV,
-    __global float* attn_out,
-    const int head_offset) {
+    __global float* attn_out) {
 
     int i = get_global_id(0);
     int d = get_global_id(1);
-    int b = get_global_id(2);
+    int z = get_global_id(2);
 
-    if (i >= TOKENS || d >= HEAD_DIM || b >= BATCH_SIZE) return;
+    int batch_idx = z / NUM_HEADS;
+    int head_idx = z % NUM_HEADS;
 
-    int batch_score_offset = b * (TOKENS * TOKENS);
-    int batch_qkv_offset = b * (TOKENS * QKV_DIM);
-    int batch_out_offset = b * (TOKENS * EMBED_DIM);
+    if (i >= TOKENS || d >= HEAD_DIM || batch_idx >= BATCH_SIZE) return;
+
+    int score_base = (batch_idx * NUM_HEADS + head_idx) * (TOKENS * TOKENS) + i * TOKENS;
+    int v_base_offset = 2 * EMBED_DIM + head_idx * HEAD_DIM + d; // V�� 2��°
 
     float sum = 0.0f;
 
-    for (int j = 0; j < TOKENS; j++) {
-        float s = scores[batch_score_offset + i * TOKENS + j];
-        float v = QKV[batch_qkv_offset + j * QKV_DIM + (2 * EMBED_DIM) + head_offset + d];
+    for (int j = 0; j < TOKENS; ++j) {
+        float s = scores[score_base + j];
+
+        int v_idx = (batch_idx * TOKENS + j) * QKV_DIM + v_base_offset;
+        float v = QKV[v_idx];
 
         sum += s * v;
     }
 
-    int out_idx = batch_out_offset + i * EMBED_DIM + head_offset + d;
+    int out_idx = (batch_idx * TOKENS + i) * EMBED_DIM + (head_idx * HEAD_DIM + d);
     attn_out[out_idx] = sum;
 }
 
-__kernel void conv2d(
+__kernel void patch_embedding(
     __global const float* input,
     __global float* output,
     __global const float* weight,
-    __global const float* bias) {
+    __constant float* bias) {
 
     int oc = get_global_id(0);
 
@@ -135,7 +197,9 @@ __kernel void conv2d(
     float sum = bias[oc];
 
     for (int ic = 0; ic < CHANNELS; ++ic) {
+#pragma unroll
         for (int kh = 0; kh < PATCH_SIZE; ++kh) {
+#pragma unroll
             for (int kw = 0; kw < PATCH_SIZE; ++kw) {
                 int ih = oh * PATCH_SIZE + kh;
                 int iw = ow * PATCH_SIZE + kw;
@@ -158,7 +222,7 @@ __kernel void layer_norm(
     __global const float* input,
     __global float* output,
     __global const float* weight,
-    __global const float* bias) {
+    __constant float* bias) {
 
     int t = get_global_id(0);
     if (t >= TOTAL_TOKENS) return;
@@ -197,7 +261,8 @@ __kernel void add(
     output[i] = a[i] + b[i];
 }
 
-__kernel void prepare_input(
+// cls token + position embedding
+__kernel void pos_embedding(
     __global const float* patches,
     __global const float* cls_token,
     __global const float* pos_emb,
