@@ -121,7 +121,6 @@ __kernel void linear_gelu (
     for (int k = 0; k < K; k += 4) {
         float4 in_val = vload4(0, &input[in_offset + k]);
 
-        // Weight 8개 로딩
         float4 w0 = vload4(0, &weights[wt_base + 0*K + k]);
         float4 w1 = vload4(0, &weights[wt_base + 1*K + k]);
         float4 w2 = vload4(0, &weights[wt_base + 2*K + k]);
@@ -131,7 +130,6 @@ __kernel void linear_gelu (
         float4 w6 = vload4(0, &weights[wt_base + 6*K + k]);
         float4 w7 = vload4(0, &weights[wt_base + 7*K + k]);
 
-        // 8-way FMA Pipeline
         acc0 = fma(in_val, w0, acc0);
         acc1 = fma(in_val, w1, acc1);
         acc2 = fma(in_val, w2, acc2);
@@ -142,7 +140,6 @@ __kernel void linear_gelu (
         acc7 = fma(in_val, w7, acc7);
     }
 
-    // 결과 합산 (Horizontal Sum)
     float sum0 = acc0.x + acc0.y + acc0.z + acc0.w;
     float sum1 = acc1.x + acc1.y + acc1.z + acc1.w;
     float sum2 = acc2.x + acc2.y + acc2.z + acc2.w;
@@ -152,7 +149,6 @@ __kernel void linear_gelu (
     float sum6 = acc6.x + acc6.y + acc6.z + acc6.w;
     float sum7 = acc7.x + acc7.y + acc7.z + acc7.w;
 
-    // 저장
     output[token_idx * N + (out_idx_base + 0)] = gelu(sum0 + bias[out_idx_base + 0]);
     output[token_idx * N + (out_idx_base + 1)] = gelu(sum1 + bias[out_idx_base + 1]);
     output[token_idx * N + (out_idx_base + 2)] = gelu(sum2 + bias[out_idx_base + 2]);
