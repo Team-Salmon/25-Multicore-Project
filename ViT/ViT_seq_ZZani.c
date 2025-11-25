@@ -145,12 +145,17 @@ static void multihead_attn(cl_mem input, cl_mem output,
     err = clSetKernelArg(ctx.k_attn_score, 0, sizeof(cl_mem), &ctx.d_qkv); CHECK_ERROR(err);
     err = clSetKernelArg(ctx.k_attn_score, 1, sizeof(cl_mem), &ctx.d_attn_map); CHECK_ERROR(err);
 
-    size_t gws_attn_score[2] = {
+	size_t j_threads = (tokens + 3) / 4;
+    size_t lws_attn[3] = { 32, 1, 1 };
+
+    size_t gws_attn_score[3] = {
         (size_t)tokens,
+		(size_t)j_threads,
         (size_t)batch_size * num_heads
 	};
+	padding_size(gws_attn_score, lws_attn, 3);
 
-    err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_attn_score, 2, NULL, gws_attn_score, NULL, 0, NULL, ctx.evt_ptr); CHECK_ERROR(err);
+    err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_attn_score, 3, NULL, gws_attn_score, lws_attn, 0, NULL, ctx.evt_ptr); CHECK_ERROR(err);
 #ifdef PROFILE_MODE
     profile_event(*ctx.evt_ptr, "Attention Score");
 #endif
