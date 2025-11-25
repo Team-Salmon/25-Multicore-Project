@@ -145,8 +145,8 @@ static void multihead_attn(cl_mem input, cl_mem output,
     err = clSetKernelArg(ctx.k_attn_score, 0, sizeof(cl_mem), &ctx.d_qkv); CHECK_ERROR(err);
     err = clSetKernelArg(ctx.k_attn_score, 1, sizeof(cl_mem), &ctx.d_attn_map); CHECK_ERROR(err);
 
-	size_t j_threads = (tokens + 3) / 4;
-    size_t lws_attn[3] = { 32, 1, 1 };
+    size_t j_threads = (tokens + 3) / 4;
+    size_t lws_attn[3] = { 32, 1, 1};
 
     size_t gws_attn_score[3] = {
         (size_t)tokens,
@@ -180,7 +180,7 @@ static void multihead_attn(cl_mem input, cl_mem output,
 
     size_t gws[3] = {
         (size_t)tokens,
-        (size_t)head_dim,
+        (size_t)head_dim / 4,
         (size_t)batch_size * num_heads
     };
 

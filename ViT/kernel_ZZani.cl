@@ -168,27 +168,29 @@ __kernel void attn_context(
     int d = get_global_id(1);
     int z = get_global_id(2);
 
+    int d_start = d * 4;
     int batch_idx = z / NUM_HEADS;
     int head_idx = z % NUM_HEADS;
 
     if (i >= TOKENS || d >= HEAD_DIM || batch_idx >= BATCH_SIZE) return;
 
     int score_base = (batch_idx * NUM_HEADS + head_idx) * (TOKENS * TOKENS) + i * TOKENS;
-    int v_base_offset = 2 * EMBED_DIM + head_idx * HEAD_DIM + d; // V�� 2��°
+    int v_base_offset = 2 * EMBED_DIM + head_idx * HEAD_DIM + d_start;
+	int qkv_batch_base = batch_idx * TOKENS * QKV_DIM;
 
-    float sum = 0.0f;
+	float4 sum = (float4)(0.0f);
 
     for (int j = 0; j < TOKENS; ++j) {
         float s = scores[score_base + j];
 
-        int v_idx = (batch_idx * TOKENS + j) * QKV_DIM + v_base_offset;
-        float v = QKV[v_idx];
+        int v_idx = qkv_batch_base + j * QKV_DIM + v_base_offset;
+        float4 v = vload4(0, &QKV[v_idx]);
 
         sum += s * v;
     }
 
-    int out_idx = (batch_idx * TOKENS + i) * EMBED_DIM + (head_idx * HEAD_DIM + d);
-    attn_out[out_idx] = sum;
+    int out_idx = (batch_idx * TOKENS + i) * EMBED_DIM + (head_idx * HEAD_DIM + d_start);
+	vstore4(sum, 0, &attn_out[out_idx]);
 }
 
 __kernel void patch_embedding(
