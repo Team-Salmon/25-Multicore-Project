@@ -145,11 +145,6 @@ static void multihead_attn(cl_mem input, cl_mem output,
     err = clSetKernelArg(ctx.k_attn_score, 0, sizeof(cl_mem), &ctx.d_qkv); CHECK_ERROR(err);
     err = clSetKernelArg(ctx.k_attn_score, 1, sizeof(cl_mem), &ctx.d_attn_map); CHECK_ERROR(err);
 
-    //size_t gws_attn_score[3] = {
-    //    (size_t)tokens,
-    //    (size_t)tokens,
-    //    (size_t)batch_size * num_heads
-    //};
     size_t gws_attn_score[2] = {
         (size_t)tokens,
         (size_t)batch_size * num_heads
@@ -160,7 +155,7 @@ static void multihead_attn(cl_mem input, cl_mem output,
     profile_event(*ctx.evt_ptr, "Attention Score");
 #endif
 
-    // Softmax ���
+    // Softmax
 
     int token_size = tokens;
     err = clSetKernelArg(ctx.k_softmax, 0, sizeof(cl_mem), &ctx.d_attn_map); CHECK_ERROR(err);

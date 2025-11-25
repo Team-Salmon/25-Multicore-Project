@@ -107,27 +107,24 @@ __kernel void attn_score(
         q_reg[k] = vload4(0, &QKV[q_start + k * 4]);
     }
 
-    // 4. 모든 Key 토큰에 대해 Loop 수행 (Thread Coarsening)
-    // 이 스레드 하나가 i행의 모든 열(j=0~196)을 다 계산해버립니다.
+  
     int out_row_offset = (batch_idx * NUM_HEADS + head_idx) * (TOKENS * TOKENS) + (i * TOKENS);
     float scale = 0.125f; // 1/sqrt(64)
 
     for (int j = 0; j < TOKENS; ++j) {
         
         int token_offset_k = (batch_idx * TOKENS + j) * QKV_DIM;
-        int k_start = token_offset_k + EMBED_DIM + head_offset; // K는 Q 다음에 위치
+        int k_start = token_offset_k + EMBED_DIM + head_offset;
 
         float sum = 0.0f;
 
-        // 5. 내적 계산 (레지스터에 있는 Q와 Global에 있는 K 연산)
-        // 컴파일러가 FMA(Fused Multiply-Add) 최적화를 하도록 유도
+
         #pragma unroll
         for (int k = 0; k < 16; ++k) {
             float4 k_vec = vload4(0, &QKV[k_start + k * 4]);
             sum += dot(q_reg[k], k_vec);
         }
 
-        // 결과 저장
         scores[out_row_offset + j] = sum * scale;
     }
 }
