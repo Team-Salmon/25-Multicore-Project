@@ -103,7 +103,7 @@ static void padding_size(size_t*, const size_t*, int);
 
 // input : (3, 224, 224)
 // output : (768, 14, 14)
-static void Conv2d(cl_mem input, cl_mem output, Network weight, Network bias) {
+static void conv2d(cl_mem input, cl_mem output, Network weight, Network bias) {
     cl_int err;
 
     err = clSetKernelArg(ctx.k_patch_embed, 0, sizeof(cl_mem), &input); CHECK_ERROR(err);
@@ -323,8 +323,7 @@ static void init_kernel(Network* networks) {
         "-D TOKENS=%d "
         "-D TOTAL_TOKENS=%d "
         "-D HEAD_DIM=%d "
-        "-D QKV_DIM=%d "
-		"-D DFL_LS=%d ",
+        "-D QKV_DIM=%d ",
         batch_size,
         img_size,
         patch_size,
@@ -336,8 +335,7 @@ static void init_kernel(Network* networks) {
         tokens,
         total_tokens,
         head_dim,
-        qkv_dim,
-		dfl_ls
+        qkv_dim
     );
 
     err = clBuildProgram(ctx.program, 1, &ctx.device, build_options, NULL, NULL);
@@ -394,7 +392,7 @@ static void init_kernel(Network* networks) {
 	// Set work sizes
 
 	set_size_3d(ctx.gws_patch, embed_dim, num_patches, batch_size);
-	set_size_3d(ctx.lws_patch, 256, 1, 1);
+	set_size_3d(ctx.lws_patch, 4, 4, 4);
     padding_size(ctx.gws_patch, ctx.lws_patch, 3);
 
 	set_size_2d(ctx.lws_linear, 4, 64);
@@ -449,7 +447,7 @@ void ViT_seq_sb(ImageData* image, Network* networks, float** probabilities) {
         clReleaseEvent(evt_input);
         evt_input = NULL;
 
-        Conv2d(ctx.d_img, ctx.d_patch, networks[1], networks[2]);
+        conv2d(ctx.d_img, ctx.d_patch, networks[1], networks[2]);
 
         pos_embedding(ctx.d_patch, networks[0].buffer, networks[3].buffer, ctx.d_input_embed);
 
