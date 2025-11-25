@@ -1,3 +1,12 @@
+/* Old Logic (Scalar operations) adapted to New Signatures 
+   + Added pos_embedding & extract_cls from New Code
+*/
+
+// Helper function: Old erf-based gelu logic
+inline float gelu(float x) {
+    return 0.5f * x * (1.0f + erf(x * 0.70710678f));
+}
+
 __kernel void linear (
     __global const float* input,
     __global float* output,
@@ -14,43 +23,18 @@ __kernel void linear (
 
     float sum = 0.0f;
     int input_offset = batch_idx * K;
-    
     int weight_offset = out_idx * K;
 
-    for (int k = 0; k < K; k += 4) {
-        float4 in_vec = vload4(0, &input[input_offset + k]);
-        float4 w_vec  = vload4(0, &weights[weight_offset + k]);
+    // Old logic: Scalar loop
+    for (int k = 0; k < K; k++) {
+        float in_val = input[input_offset + k];
+        float w_val  = weights[weight_offset + k];
         
-        sum += dot(in_vec, w_vec);
+        sum += in_val * w_val;
     }
 
     output[batch_idx * N + out_idx] = sum + bias[out_idx];
 }
-
-inline float gelu(float x) {
-    const float INV_SQRT_2 = 0.70710678f;
-
-    const float p  = 0.3275911f;
-    const float a1 = 0.254829592f;
-    const float a2 = -0.284496736f;
-    const float a3 = 1.421413741f;
-    const float a4 = -1.453152027f;
-    const float a5 = 1.061405429f;
-
-    float scaled_x = x * INV_SQRT_2;
-    float abs_x = fabs(scaled_x);
-    float sign_val = (scaled_x >= 0.0f) ? 1.0f : -1.0f;
-    float t = native_recip(1.0f + p * abs_x);
-    float y = ((((a5 * t + a4) * t) + a3) * t + a2) * t + a1;
-    float erf = sign_val * (1.0f - y * t * native_exp(-abs_x * abs_x));
-    return 0.5f * x * (1.0f + erf);
-}
-
-/*
-inline float gelu(float x) {
-    return 0.5f * x * (1.0f + erf(x * 0.70710678f));
-}
-*/
 
 __kernel void linear_gelu (
     __global const float* input,
@@ -68,14 +52,14 @@ __kernel void linear_gelu (
 
     float sum = 0.0f;
     int input_offset = batch_idx * K;
-    
     int weight_offset = out_idx * K;
 
-    for (int k = 0; k < K; k += 4) {
-        float4 in_vec = vload4(0, &input[input_offset + k]);
-        float4 w_vec  = vload4(0, &weights[weight_offset + k]);
+    // Old logic: Scalar loop
+    for (int k = 0; k < K; k++) {
+        float in_val = input[input_offset + k];
+        float w_val  = weights[weight_offset + k];
         
-        sum += dot(in_vec, w_vec);
+        sum += in_val * w_val;
     }
 
     float x = sum + bias[out_idx];    
@@ -97,7 +81,7 @@ __kernel void attn_score (
 
     int head_offset = head_idx * HEAD_DIM;
 
-    int token_offset_q = (batch_idx * TOKENS + i) * QKV_DIM; // QKV_DIM = 768 * 3
+    int token_offset_q = (batch_idx * TOKENS + i) * QKV_DIM; 
     int token_offset_k = (batch_idx * TOKENS + j) * QKV_DIM;
 
     int q_start = token_offset_q + head_offset; 
@@ -105,12 +89,12 @@ __kernel void attn_score (
 
     float sum = 0.0f;
 
-    #pragma unroll
-    for (int d = 0; d < HEAD_DIM; d += 4) {
-        float4 q_vec = vload4(0, &QKV[q_start + d]);
-        float4 k_vec = vload4(0, &QKV[k_start + d]);
+    // Old logic: Scalar loop
+    for (int d = 0; d < HEAD_DIM; d++) {
+        float q_val = QKV[q_start + d];
+        float k_val = QKV[k_start + d];
         
-        sum += dot(q_vec, k_vec);
+        sum += q_val * k_val;
     }
 
     int out_idx = (batch_idx * NUM_HEADS + head_idx) * (TOKENS * TOKENS) + (i * TOKENS + j);
@@ -159,10 +143,11 @@ __kernel void attn_context(
     if (i >= TOKENS || d >= HEAD_DIM || batch_idx >= BATCH_SIZE) return;
 
     int score_base = (batch_idx * NUM_HEADS + head_idx) * (TOKENS * TOKENS) + i * TOKENS;
-    int v_base_offset = 2 * EMBED_DIM + head_idx * HEAD_DIM + d; // V´Â 2¹øÂ°
+    int v_base_offset = 2 * EMBED_DIM + head_idx * HEAD_DIM + d; 
 
     float sum = 0.0f;
 
+    // Old logic: Scalar loop
     for (int j = 0; j < TOKENS; ++j) {
         float s = scores[score_base + j];
         
@@ -183,7 +168,6 @@ __kernel void patch_embedding (
     __constant float* bias) {
 
     int oc = get_global_id(0);
-
     int patch_index = get_global_id(1);
     int batch_index = get_global_id(2);
 
@@ -196,10 +180,9 @@ __kernel void patch_embedding (
 
     float sum = bias[oc];
 
+    // Old logic: Scalar loop
     for (int ic = 0; ic < CHANNELS; ++ic) {
-        #pragma unroll
         for (int kh = 0; kh < PATCH_SIZE; ++kh) {
-            #pragma unroll
             for (int kw = 0; kw < PATCH_SIZE; ++kw) {
                 int ih = oh * PATCH_SIZE + kh;
                 int iw = ow * PATCH_SIZE + kw;
@@ -232,6 +215,7 @@ __kernel void layer_norm (
     float sum = 0.0f;
     float sum_sq = 0.0f;
 
+    // Old logic: Scalar loop
     for (int i = 0; i < EMBED_DIM; i++) {
         float val = input[offset + i];
         sum += val;
@@ -260,6 +244,8 @@ __kernel void add (
 
     output[i] = a[i] + b[i];
 }
+
+// --- Added from New Code (Direct Copy) ---
 
 // cls token + position embedding
 __kernel void pos_embedding (

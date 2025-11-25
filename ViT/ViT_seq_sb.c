@@ -22,7 +22,7 @@
 #define eps 1e-6
 
 // custom defines
-#define batch_size 4
+#define batch_size 1
 #define dfl_ls 256 // default local size
 
 #define output_size img_size / patch_size
@@ -36,7 +36,7 @@
 
 #define enc_size tokens * embed_dim
 
-// #define PROFILE_MODE
+#define PROFILE_MODE
 
 typedef struct __cl_context {
     cl_platform_id platform;
@@ -282,7 +282,7 @@ static void pos_embedding(cl_mem input, cl_mem cls, cl_mem pos, cl_mem output) {
     CHECK_ERROR(err);
 
 #ifdef PROFILE_MODE
-	profile_event(*ctx.evt_ptr, "Prepare Input");
+	profile_event(*ctx.evt_ptr, "Cls + Pos Emb Input");
 #endif
 }
 
@@ -400,7 +400,7 @@ static void init_kernel(Network* networks) {
 	set_size_2d(ctx.lws_linear, 4, 64);
 
 #ifdef PROFILE_MODE
-	ctx.evt_ptr = &ctx.profile_event;
+	ctx.evt_ptr = &ctx.evt_profile;
 #else
 	ctx.evt_ptr = NULL;
 #endif
@@ -558,7 +558,7 @@ void ViT_seq_sb(ImageData* image, Network* networks, float** probabilities) {
 	}
 
 #ifdef PROFILE_MODE
-    clFinish(ctx.compute_queue);
+    clFinish(ctx.q_compute);
     print_profiler_stats();
 #endif
 
