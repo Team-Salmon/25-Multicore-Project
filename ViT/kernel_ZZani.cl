@@ -87,36 +87,49 @@ __kernel void attn_score(
     __global float* scores) {
 
     int i = get_global_id(0);
-    int j = get_global_id(1);
-    int z = get_global_id(2);
+    int z = get_global_id(1);
 
     int batch_idx = z / NUM_HEADS;
     int head_idx = z % NUM_HEADS;
 
-    if (i >= TOKENS || j >= TOKENS || batch_idx >= BATCH_SIZE) return;
+    if (i >= TOKENS || batch_idx >= BATCH_SIZE) return;
 
     int head_offset = head_idx * HEAD_DIM;
 
     int token_offset_q = (batch_idx * TOKENS + i) * QKV_DIM; // QKV_DIM = 768 * 3
-    int token_offset_k = (batch_idx * TOKENS + j) * QKV_DIM;
 
     int q_start = token_offset_q + head_offset;
-    int k_start = token_offset_k + EMBED_DIM + head_offset;
 
-    float sum = 0.0f;
+    float4 q_reg[16];
 
 #pragma unroll
-    for (int d = 0; d < HEAD_DIM; d += 4) {
-        float4 q_vec = vload4(0, &QKV[q_start + d]);
-        float4 k_vec = vload4(0, &QKV[k_start + d]);
-
-        sum += dot(q_vec, k_vec);
+   for (int k = 0; k < 16; ++k) {
+        q_reg[k] = vload4(0, &QKV[q_start + k * 4]);
     }
 
-    int out_idx = (batch_idx * NUM_HEADS + head_idx) * (TOKENS * TOKENS) + (i * TOKENS + j);
+    // 4. 모든 Key 토큰에 대해 Loop 수행 (Thread Coarsening)
+    // 이 스레드 하나가 i행의 모든 열(j=0~196)을 다 계산해버립니다.
+    int out_row_offset = (batch_idx * NUM_HEADS + head_idx) * (TOKENS * TOKENS) + (i * TOKENS);
+    float scale = 0.125f; // 1/sqrt(64)
 
-    float scale = 1.0f / sqrt((float)HEAD_DIM);
-    scores[out_idx] = sum * scale;
+    for (int j = 0; j < TOKENS; ++j) {
+        
+        int token_offset_k = (batch_idx * TOKENS + j) * QKV_DIM;
+        int k_start = token_offset_k + EMBED_DIM + head_offset; // K는 Q 다음에 위치
+
+        float sum = 0.0f;
+
+        // 5. 내적 계산 (레지스터에 있는 Q와 Global에 있는 K 연산)
+        // 컴파일러가 FMA(Fused Multiply-Add) 최적화를 하도록 유도
+        #pragma unroll
+        for (int k = 0; k < 16; ++k) {
+            float4 k_vec = vload4(0, &QKV[k_start + k * 4]);
+            sum += dot(q_reg[k], k_vec);
+        }
+
+        // 결과 저장
+        scores[out_row_offset + j] = sum * scale;
+    }
 }
 
 __kernel void softmax(
