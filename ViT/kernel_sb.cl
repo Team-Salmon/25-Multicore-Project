@@ -1,71 +1,3 @@
-__kernel void linear(
-    __global const float* input,
-    __global float* output,
-    __global const float* weights,
-    __global const float* bias,
-    const int M,
-    const int K,
-    const int N ) {
-
-    int out_group_idx = get_global_id(0);
-    int token_idx = get_global_id(1);
-
-    int out_idx_base = out_group_idx * 8;
-    if (out_idx_base >= N || token_idx >= M) return;
-
-    float4 acc0 = (float4)(0.0f); 
-    float4 acc1 = (float4)(0.0f);
-    float4 acc2 = (float4)(0.0f); 
-    float4 acc3 = (float4)(0.0f);
-    float4 acc4 = (float4)(0.0f); 
-    float4 acc5 = (float4)(0.0f);
-    float4 acc6 = (float4)(0.0f); 
-    float4 acc7 = (float4)(0.0f);
-
-    int in_offset = token_idx * K;
-    int wt_base = out_idx_base * K;
-
-    for (int k = 0; k < K; k += 4) {
-        float4 in_val = vload4(0, &input[in_offset + k]);
-
-        float4 w0 = vload4(0, &weights[wt_base + 0*K + k]);
-        float4 w1 = vload4(0, &weights[wt_base + 1*K + k]);
-        float4 w2 = vload4(0, &weights[wt_base + 2*K + k]);
-        float4 w3 = vload4(0, &weights[wt_base + 3*K + k]);
-        float4 w4 = vload4(0, &weights[wt_base + 4*K + k]);
-        float4 w5 = vload4(0, &weights[wt_base + 5*K + k]);
-        float4 w6 = vload4(0, &weights[wt_base + 6*K + k]);
-        float4 w7 = vload4(0, &weights[wt_base + 7*K + k]);
-
-        acc0 = fma(in_val, w0, acc0);
-        acc1 = fma(in_val, w1, acc1);
-        acc2 = fma(in_val, w2, acc2);
-        acc3 = fma(in_val, w3, acc3);
-        acc4 = fma(in_val, w4, acc4);
-        acc5 = fma(in_val, w5, acc5);
-        acc6 = fma(in_val, w6, acc6);
-        acc7 = fma(in_val, w7, acc7);
-    }
-
-    float sum0 = acc0.x + acc0.y + acc0.z + acc0.w;
-    float sum1 = acc1.x + acc1.y + acc1.z + acc1.w;
-    float sum2 = acc2.x + acc2.y + acc2.z + acc2.w;
-    float sum3 = acc3.x + acc3.y + acc3.z + acc3.w;
-    float sum4 = acc4.x + acc4.y + acc4.z + acc4.w;
-    float sum5 = acc5.x + acc5.y + acc5.z + acc5.w;
-    float sum6 = acc6.x + acc6.y + acc6.z + acc6.w;
-    float sum7 = acc7.x + acc7.y + acc7.z + acc7.w;
-
-    output[token_idx * N + (out_idx_base + 0)] = sum0 + bias[out_idx_base + 0];
-    output[token_idx * N + (out_idx_base + 1)] = sum1 + bias[out_idx_base + 1];
-    output[token_idx * N + (out_idx_base + 2)] = sum2 + bias[out_idx_base + 2];
-    output[token_idx * N + (out_idx_base + 3)] = sum3 + bias[out_idx_base + 3];
-    output[token_idx * N + (out_idx_base + 4)] = sum4 + bias[out_idx_base + 4];
-    output[token_idx * N + (out_idx_base + 5)] = sum5 + bias[out_idx_base + 5];
-    output[token_idx * N + (out_idx_base + 6)] = sum6 + bias[out_idx_base + 6];
-    output[token_idx * N + (out_idx_base + 7)] = sum7 + bias[out_idx_base + 7];
-}
-
 inline float gelu(float x) {
     const float INV_SQRT_2 = 0.70710678f;
 
@@ -85,13 +17,7 @@ inline float gelu(float x) {
     return 0.5f * x * (1.0f + erf);
 }
 
-/*
-inline float gelu(float x) {
-    return 0.5f * x * (1.0f + erf(x * 0.70710678f));
-}
-*/
-
-__kernel void linear_gelu (
+__kernel void linear(
     __global const float* input,
     __global float* output,
     __global const float* weights,
@@ -101,26 +27,20 @@ __kernel void linear_gelu (
     const int N ) {
 
     int out_group_idx = get_global_id(0);
-    int token_idx = get_global_id(1);
+    int token_idx     = get_global_id(1);
+    int out_idx_base  = out_group_idx * 8;
 
-    int out_idx_base = out_group_idx * 8;
     if (out_idx_base >= N || token_idx >= M) return;
 
-    float4 acc0 = (float4)(0.0f); 
-    float4 acc1 = (float4)(0.0f);
-    float4 acc2 = (float4)(0.0f); 
-    float4 acc3 = (float4)(0.0f);
-    float4 acc4 = (float4)(0.0f); 
-    float4 acc5 = (float4)(0.0f);
-    float4 acc6 = (float4)(0.0f); 
-    float4 acc7 = (float4)(0.0f);
+    float4 acc0 = 0.0f; float4 acc1 = 0.0f; float4 acc2 = 0.0f; float4 acc3 = 0.0f;
+    float4 acc4 = 0.0f; float4 acc5 = 0.0f; float4 acc6 = 0.0f; float4 acc7 = 0.0f;
 
     int in_offset = token_idx * K;
-    int wt_base = out_idx_base * K;
+    int wt_base   = out_idx_base * K;
 
-    for (int k = 0; k < K; k += 4) {
+    for (int k = 0; k < K; k += 16) {
         float4 in_val = vload4(0, &input[in_offset + k]);
-
+        
         float4 w0 = vload4(0, &weights[wt_base + 0*K + k]);
         float4 w1 = vload4(0, &weights[wt_base + 1*K + k]);
         float4 w2 = vload4(0, &weights[wt_base + 2*K + k]);
@@ -129,6 +49,66 @@ __kernel void linear_gelu (
         float4 w5 = vload4(0, &weights[wt_base + 5*K + k]);
         float4 w6 = vload4(0, &weights[wt_base + 6*K + k]);
         float4 w7 = vload4(0, &weights[wt_base + 7*K + k]);
+
+        acc0 = fma(in_val, w0, acc0);
+        acc1 = fma(in_val, w1, acc1);
+        acc2 = fma(in_val, w2, acc2);
+        acc3 = fma(in_val, w3, acc3);
+        acc4 = fma(in_val, w4, acc4);
+        acc5 = fma(in_val, w5, acc5);
+        acc6 = fma(in_val, w6, acc6);
+        acc7 = fma(in_val, w7, acc7);
+
+        in_val = vload4(0, &input[in_offset + k + 4]);
+        
+        w0 = vload4(0, &weights[wt_base + 0*K + k + 4]);
+        w1 = vload4(0, &weights[wt_base + 1*K + k + 4]);
+        w2 = vload4(0, &weights[wt_base + 2*K + k + 4]);
+        w3 = vload4(0, &weights[wt_base + 3*K + k + 4]);
+        w4 = vload4(0, &weights[wt_base + 4*K + k + 4]);
+        w5 = vload4(0, &weights[wt_base + 5*K + k + 4]);
+        w6 = vload4(0, &weights[wt_base + 6*K + k + 4]);
+        w7 = vload4(0, &weights[wt_base + 7*K + k + 4]);
+
+        acc0 = fma(in_val, w0, acc0);
+        acc1 = fma(in_val, w1, acc1);
+        acc2 = fma(in_val, w2, acc2);
+        acc3 = fma(in_val, w3, acc3);
+        acc4 = fma(in_val, w4, acc4);
+        acc5 = fma(in_val, w5, acc5);
+        acc6 = fma(in_val, w6, acc6);
+        acc7 = fma(in_val, w7, acc7);
+
+        in_val = vload4(0, &input[in_offset + k + 8]);
+        
+        w0 = vload4(0, &weights[wt_base + 0*K + k + 8]);
+        w1 = vload4(0, &weights[wt_base + 1*K + k + 8]);
+        w2 = vload4(0, &weights[wt_base + 2*K + k + 8]);
+        w3 = vload4(0, &weights[wt_base + 3*K + k + 8]);
+        w4 = vload4(0, &weights[wt_base + 4*K + k + 8]);
+        w5 = vload4(0, &weights[wt_base + 5*K + k + 8]);
+        w6 = vload4(0, &weights[wt_base + 6*K + k + 8]);
+        w7 = vload4(0, &weights[wt_base + 7*K + k + 8]);
+
+        acc0 = fma(in_val, w0, acc0);
+        acc1 = fma(in_val, w1, acc1);
+        acc2 = fma(in_val, w2, acc2);
+        acc3 = fma(in_val, w3, acc3);
+        acc4 = fma(in_val, w4, acc4);
+        acc5 = fma(in_val, w5, acc5);
+        acc6 = fma(in_val, w6, acc6);
+        acc7 = fma(in_val, w7, acc7);
+        
+        in_val = vload4(0, &input[in_offset + k + 12]);
+        
+        w0 = vload4(0, &weights[wt_base + 0*K + k + 12]);
+        w1 = vload4(0, &weights[wt_base + 1*K + k + 12]);
+        w2 = vload4(0, &weights[wt_base + 2*K + k + 12]);
+        w3 = vload4(0, &weights[wt_base + 3*K + k + 12]);
+        w4 = vload4(0, &weights[wt_base + 4*K + k + 12]);
+        w5 = vload4(0, &weights[wt_base + 5*K + k + 12]);
+        w6 = vload4(0, &weights[wt_base + 6*K + k + 12]);
+        w7 = vload4(0, &weights[wt_base + 7*K + k + 12]);
 
         acc0 = fma(in_val, w0, acc0);
         acc1 = fma(in_val, w1, acc1);
@@ -149,14 +129,141 @@ __kernel void linear_gelu (
     float sum6 = acc6.x + acc6.y + acc6.z + acc6.w;
     float sum7 = acc7.x + acc7.y + acc7.z + acc7.w;
 
-    output[token_idx * N + (out_idx_base + 0)] = gelu(sum0 + bias[out_idx_base + 0]);
-    output[token_idx * N + (out_idx_base + 1)] = gelu(sum1 + bias[out_idx_base + 1]);
-    output[token_idx * N + (out_idx_base + 2)] = gelu(sum2 + bias[out_idx_base + 2]);
-    output[token_idx * N + (out_idx_base + 3)] = gelu(sum3 + bias[out_idx_base + 3]);
-    output[token_idx * N + (out_idx_base + 4)] = gelu(sum4 + bias[out_idx_base + 4]);
-    output[token_idx * N + (out_idx_base + 5)] = gelu(sum5 + bias[out_idx_base + 5]);
-    output[token_idx * N + (out_idx_base + 6)] = gelu(sum6 + bias[out_idx_base + 6]);
-    output[token_idx * N + (out_idx_base + 7)] = gelu(sum7 + bias[out_idx_base + 7]);
+    float4 b0 = vload4(0, &bias[out_idx_base + 0]);
+    float4 b1 = vload4(0, &bias[out_idx_base + 4]);
+
+    float4 res0 = (float4)(sum0, sum1, sum2, sum3) + b0;
+    float4 res1 = (float4)(sum4, sum5, sum6, sum7) + b1;
+
+    __global float* out_ptr = &output[token_idx * N + out_idx_base];
+    vstore4(res0, 0, out_ptr + 0);
+    vstore4(res1, 0, out_ptr + 4);
+}
+
+__kernel void linear_gelu (
+    __global const float* input,
+    __global float* output,
+    __global const float* weights,
+    __global const float* bias,
+    const int M,
+    const int K,
+    const int N ) {
+
+        int out_group_idx = get_global_id(0);
+    int token_idx     = get_global_id(1);
+    int out_idx_base  = out_group_idx * 8;
+
+    if (out_idx_base >= N || token_idx >= M) return;
+
+    float4 acc0 = 0.0f; float4 acc1 = 0.0f; float4 acc2 = 0.0f; float4 acc3 = 0.0f;
+    float4 acc4 = 0.0f; float4 acc5 = 0.0f; float4 acc6 = 0.0f; float4 acc7 = 0.0f;
+
+    int in_offset = token_idx * K;
+    int wt_base   = out_idx_base * K;
+
+    for (int k = 0; k < K; k += 16) {
+        float4 in_val = vload4(0, &input[in_offset + k]);
+        
+        float4 w0 = vload4(0, &weights[wt_base + 0*K + k]);
+        float4 w1 = vload4(0, &weights[wt_base + 1*K + k]);
+        float4 w2 = vload4(0, &weights[wt_base + 2*K + k]);
+        float4 w3 = vload4(0, &weights[wt_base + 3*K + k]);
+        float4 w4 = vload4(0, &weights[wt_base + 4*K + k]);
+        float4 w5 = vload4(0, &weights[wt_base + 5*K + k]);
+        float4 w6 = vload4(0, &weights[wt_base + 6*K + k]);
+        float4 w7 = vload4(0, &weights[wt_base + 7*K + k]);
+
+        acc0 = fma(in_val, w0, acc0);
+        acc1 = fma(in_val, w1, acc1);
+        acc2 = fma(in_val, w2, acc2);
+        acc3 = fma(in_val, w3, acc3);
+        acc4 = fma(in_val, w4, acc4);
+        acc5 = fma(in_val, w5, acc5);
+        acc6 = fma(in_val, w6, acc6);
+        acc7 = fma(in_val, w7, acc7);
+
+        in_val = vload4(0, &input[in_offset + k + 4]);
+        
+        w0 = vload4(0, &weights[wt_base + 0*K + k + 4]);
+        w1 = vload4(0, &weights[wt_base + 1*K + k + 4]);
+        w2 = vload4(0, &weights[wt_base + 2*K + k + 4]);
+        w3 = vload4(0, &weights[wt_base + 3*K + k + 4]);
+        w4 = vload4(0, &weights[wt_base + 4*K + k + 4]);
+        w5 = vload4(0, &weights[wt_base + 5*K + k + 4]);
+        w6 = vload4(0, &weights[wt_base + 6*K + k + 4]);
+        w7 = vload4(0, &weights[wt_base + 7*K + k + 4]);
+
+        acc0 = fma(in_val, w0, acc0);
+        acc1 = fma(in_val, w1, acc1);
+        acc2 = fma(in_val, w2, acc2);
+        acc3 = fma(in_val, w3, acc3);
+        acc4 = fma(in_val, w4, acc4);
+        acc5 = fma(in_val, w5, acc5);
+        acc6 = fma(in_val, w6, acc6);
+        acc7 = fma(in_val, w7, acc7);
+
+        in_val = vload4(0, &input[in_offset + k + 8]);
+        
+        w0 = vload4(0, &weights[wt_base + 0*K + k + 8]);
+        w1 = vload4(0, &weights[wt_base + 1*K + k + 8]);
+        w2 = vload4(0, &weights[wt_base + 2*K + k + 8]);
+        w3 = vload4(0, &weights[wt_base + 3*K + k + 8]);
+        w4 = vload4(0, &weights[wt_base + 4*K + k + 8]);
+        w5 = vload4(0, &weights[wt_base + 5*K + k + 8]);
+        w6 = vload4(0, &weights[wt_base + 6*K + k + 8]);
+        w7 = vload4(0, &weights[wt_base + 7*K + k + 8]);
+
+        acc0 = fma(in_val, w0, acc0);
+        acc1 = fma(in_val, w1, acc1);
+        acc2 = fma(in_val, w2, acc2);
+        acc3 = fma(in_val, w3, acc3);
+        acc4 = fma(in_val, w4, acc4);
+        acc5 = fma(in_val, w5, acc5);
+        acc6 = fma(in_val, w6, acc6);
+        acc7 = fma(in_val, w7, acc7);
+        
+        in_val = vload4(0, &input[in_offset + k + 12]);
+        
+        w0 = vload4(0, &weights[wt_base + 0*K + k + 12]);
+        w1 = vload4(0, &weights[wt_base + 1*K + k + 12]);
+        w2 = vload4(0, &weights[wt_base + 2*K + k + 12]);
+        w3 = vload4(0, &weights[wt_base + 3*K + k + 12]);
+        w4 = vload4(0, &weights[wt_base + 4*K + k + 12]);
+        w5 = vload4(0, &weights[wt_base + 5*K + k + 12]);
+        w6 = vload4(0, &weights[wt_base + 6*K + k + 12]);
+        w7 = vload4(0, &weights[wt_base + 7*K + k + 12]);
+
+        acc0 = fma(in_val, w0, acc0);
+        acc1 = fma(in_val, w1, acc1);
+        acc2 = fma(in_val, w2, acc2);
+        acc3 = fma(in_val, w3, acc3);
+        acc4 = fma(in_val, w4, acc4);
+        acc5 = fma(in_val, w5, acc5);
+        acc6 = fma(in_val, w6, acc6);
+        acc7 = fma(in_val, w7, acc7);
+    }
+
+    float sum0 = acc0.x + acc0.y + acc0.z + acc0.w;
+    float sum1 = acc1.x + acc1.y + acc1.z + acc1.w;
+    float sum2 = acc2.x + acc2.y + acc2.z + acc2.w;
+    float sum3 = acc3.x + acc3.y + acc3.z + acc3.w;
+    float sum4 = acc4.x + acc4.y + acc4.z + acc4.w;
+    float sum5 = acc5.x + acc5.y + acc5.z + acc5.w;
+    float sum6 = acc6.x + acc6.y + acc6.z + acc6.w;
+    float sum7 = acc7.x + acc7.y + acc7.z + acc7.w;
+
+    float4 b0 = vload4(0, &bias[out_idx_base + 0]);
+    float4 b1 = vload4(0, &bias[out_idx_base + 4]);
+
+    float4 temp0 = (float4)(sum0, sum1, sum2, sum3) + b0;
+    float4 temp1 = (float4)(sum4, sum5, sum6, sum7) + b1;
+
+    float4 res0 = (float4)(gelu(temp0.x), gelu(temp0.y), gelu(temp0.z), gelu(temp0.w));
+    float4 res1 = (float4)(gelu(temp1.x), gelu(temp1.y), gelu(temp1.z), gelu(temp1.w));
+
+    __global float* out_ptr = &output[token_idx * N + out_idx_base];
+    vstore4(res0, 0, out_ptr + 0);
+    vstore4(res1, 0, out_ptr + 4);
 }
 
 __kernel void attn_score (
