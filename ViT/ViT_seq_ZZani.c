@@ -312,6 +312,7 @@ static void init_kernel(Network* networks) {
     char build_options[1024];
 
     snprintf(build_options, sizeof(build_options),
+
         "-D BATCH_SIZE=%d "
         "-D IMG_SIZE=%d "
         "-D PATCH_SIZE=%d "
@@ -394,7 +395,7 @@ static void init_kernel(Network* networks) {
     // Set work sizes
 
     set_size_3d(ctx.gws_patch, embed_dim, num_patches, batch_size);
-    set_size_3d(ctx.lws_patch, 256, 1, 1);
+    set_size_3d(ctx.lws_patch, 4, 4, 4);
     padding_size(ctx.gws_patch, ctx.lws_patch, 3);
 
     set_size_2d(ctx.lws_linear, 4, 64);
