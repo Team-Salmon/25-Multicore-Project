@@ -23,7 +23,7 @@
 
 // custom defines
 #define batch_size 4
-#define linear_factor 8
+#define linear_factor 1
 #define dfl_ls 256 // default local size
 
 #define output_size img_size / patch_size
@@ -37,7 +37,7 @@
 
 #define enc_size tokens * embed_dim
 
-#define PROFILE_MODE
+// #define PROFILE_MODE
 
 typedef struct __cl_context {
     cl_platform_id platform;
@@ -200,7 +200,7 @@ static void linear_layer(cl_mem input, cl_mem output, int token_size, int in_fea
     err = clSetKernelArg(ctx.k_linear, 5, sizeof(int), &in_features); CHECK_ERROR(err);
     err = clSetKernelArg(ctx.k_linear, 6, sizeof(int), &out_features); CHECK_ERROR(err);
 
-	size_t gws[2] = { out_features / linear_factor, token_size };
+	size_t gws[2] = { token_size, out_features };
 	padding_size(gws, ctx.lws_linear, 2);
     
     err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_linear, 2, NULL, gws, ctx.lws_linear, 0, NULL, ctx.evt_ptr); CHECK_ERROR(err);
@@ -220,7 +220,7 @@ static void linear_gelu_layer(cl_mem input, cl_mem output, int token_size, int i
     err = clSetKernelArg(ctx.k_linear_gelu, 5, sizeof(int), &in_features); CHECK_ERROR(err);
     err = clSetKernelArg(ctx.k_linear_gelu, 6, sizeof(int), &out_features); CHECK_ERROR(err);
 
-    size_t gws[2] = { out_features / linear_factor, token_size };
+    size_t gws[2] = { token_size, out_features };
 
     padding_size(gws, ctx.lws_linear, 2);
     
