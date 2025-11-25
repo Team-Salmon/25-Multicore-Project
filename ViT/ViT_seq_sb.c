@@ -37,7 +37,7 @@
 
 #define enc_size tokens * embed_dim
 
-// #define PROFILE_MODE
+#define PROFILE_MODE
 
 typedef struct __cl_context {
     cl_platform_id platform;
@@ -67,6 +67,8 @@ typedef struct __cl_context {
 
     cl_kernel k_extract_cls;
 
+    cl_mem d_networks[152];
+
     cl_mem d_hidden[2];
 
     cl_mem d_img;
@@ -89,7 +91,7 @@ typedef struct __cl_context {
 
 static CLContext ctx = { 0 };
 
-static void linear_layer(cl_mem, cl_mem, int, int, int, Network, Network);
+static void linear_layer(cl_mem, cl_mem, int, int, int, cl_mem, cl_mem);
 static void add(cl_mem, cl_mem, cl_mem, int);
 
 static void init_kernel(Network*);
@@ -102,13 +104,13 @@ static void padding_size(size_t*, const size_t*, int);
 
 ////////////////////////////////////// ViT function //////////////////////////////////////
 
-static void conv2d(cl_mem input, cl_mem output, Network weight, Network bias) {
+static void conv2d(cl_mem input, cl_mem output, cl_mem weight, cl_mem bias) {
     cl_int err;
 
     err = clSetKernelArg(ctx.k_patch_embed, 0, sizeof(cl_mem), &input); CHECK_ERROR(err);
     err = clSetKernelArg(ctx.k_patch_embed, 1, sizeof(cl_mem), &output); CHECK_ERROR(err);
-    err = clSetKernelArg(ctx.k_patch_embed, 2, sizeof(cl_mem), &weight.buffer); CHECK_ERROR(err);
-    err = clSetKernelArg(ctx.k_patch_embed, 3, sizeof(cl_mem), &bias.buffer); CHECK_ERROR(err);
+    err = clSetKernelArg(ctx.k_patch_embed, 2, sizeof(cl_mem), &weight); CHECK_ERROR(err);
+    err = clSetKernelArg(ctx.k_patch_embed, 3, sizeof(cl_mem), &bias); CHECK_ERROR(err);
     
     err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_patch_embed, 3, NULL, 
         ctx.gws_patch, ctx.lws_patch, 0, NULL, ctx.evt_ptr); 
@@ -119,13 +121,13 @@ static void conv2d(cl_mem input, cl_mem output, Network weight, Network bias) {
 #endif
 }
 
-static void layer_norm(cl_mem input, cl_mem ouput, Network weight, Network bias) {
+static void layer_norm(cl_mem input, cl_mem ouput, cl_mem weight, cl_mem bias) {
     cl_int err;
 
     err = clSetKernelArg(ctx.k_layernorm, 0, sizeof(cl_mem), &input); CHECK_ERROR(err);
     err = clSetKernelArg(ctx.k_layernorm, 1, sizeof(cl_mem), &ouput); CHECK_ERROR(err);
-    err = clSetKernelArg(ctx.k_layernorm, 2, sizeof(cl_mem), &weight.buffer); CHECK_ERROR(err);
-    err = clSetKernelArg(ctx.k_layernorm, 3, sizeof(cl_mem), &bias.buffer); CHECK_ERROR(err);
+    err = clSetKernelArg(ctx.k_layernorm, 2, sizeof(cl_mem), &weight); CHECK_ERROR(err);
+    err = clSetKernelArg(ctx.k_layernorm, 3, sizeof(cl_mem), &bias); CHECK_ERROR(err);
 
     size_t gws_layernorm = (size_t)total_tokens;
 	
@@ -136,7 +138,7 @@ static void layer_norm(cl_mem input, cl_mem ouput, Network weight, Network bias)
 }
 
 static void multihead_attn(cl_mem input, cl_mem output,
-    Network in_weight, Network in_bias, Network out_weight, Network out_bias) {
+    cl_mem in_weight, cl_mem in_bias, cl_mem out_weight, cl_mem out_bias) {
 
     cl_int err;
     linear_layer(input, ctx.d_qkv, total_tokens, embed_dim, qkv_dim, in_weight, in_bias);
@@ -187,13 +189,13 @@ static void multihead_attn(cl_mem input, cl_mem output,
     linear_layer(ctx.d_context_vec, output, total_tokens, embed_dim, embed_dim, out_weight, out_bias);
 }
 
-static void linear_layer(cl_mem input, cl_mem output, int token_size, int in_features, int out_features, Network weight, Network bias) {
+static void linear_layer(cl_mem input, cl_mem output, int token_size, int in_features, int out_features, cl_mem weight, cl_mem bias) {
     cl_int err;
 
     err = clSetKernelArg(ctx.k_linear, 0, sizeof(cl_mem), &input); CHECK_ERROR(err);
     err = clSetKernelArg(ctx.k_linear, 1, sizeof(cl_mem), &output); CHECK_ERROR(err);
-    err = clSetKernelArg(ctx.k_linear, 2, sizeof(cl_mem), &weight.buffer); CHECK_ERROR(err);
-    err = clSetKernelArg(ctx.k_linear, 3, sizeof(cl_mem), &bias.buffer); CHECK_ERROR(err);
+    err = clSetKernelArg(ctx.k_linear, 2, sizeof(cl_mem), &weight); CHECK_ERROR(err);
+    err = clSetKernelArg(ctx.k_linear, 3, sizeof(cl_mem), &bias); CHECK_ERROR(err);
     err = clSetKernelArg(ctx.k_linear, 4, sizeof(int), &token_size); CHECK_ERROR(err);
     err = clSetKernelArg(ctx.k_linear, 5, sizeof(int), &in_features); CHECK_ERROR(err);
     err = clSetKernelArg(ctx.k_linear, 6, sizeof(int), &out_features); CHECK_ERROR(err);
@@ -207,13 +209,13 @@ static void linear_layer(cl_mem input, cl_mem output, int token_size, int in_fea
 #endif
 }
 
-static void linear_gelu_layer(cl_mem input, cl_mem output, int token_size, int in_features, int out_features, Network weight, Network bias) {
+static void linear_gelu_layer(cl_mem input, cl_mem output, int token_size, int in_features, int out_features, cl_mem weight, cl_mem bias) {
     cl_int err;
 
     err = clSetKernelArg(ctx.k_linear_gelu, 0, sizeof(cl_mem), &input); CHECK_ERROR(err);
     err = clSetKernelArg(ctx.k_linear_gelu, 1, sizeof(cl_mem), &output); CHECK_ERROR(err);
-    err = clSetKernelArg(ctx.k_linear_gelu, 2, sizeof(cl_mem), &weight.buffer); CHECK_ERROR(err);
-    err = clSetKernelArg(ctx.k_linear_gelu, 3, sizeof(cl_mem), &bias.buffer); CHECK_ERROR(err);
+    err = clSetKernelArg(ctx.k_linear_gelu, 2, sizeof(cl_mem), &weight); CHECK_ERROR(err);
+    err = clSetKernelArg(ctx.k_linear_gelu, 3, sizeof(cl_mem), &bias); CHECK_ERROR(err);
     err = clSetKernelArg(ctx.k_linear_gelu, 4, sizeof(int), &token_size); CHECK_ERROR(err);
     err = clSetKernelArg(ctx.k_linear_gelu, 5, sizeof(int), &in_features); CHECK_ERROR(err);
     err = clSetKernelArg(ctx.k_linear_gelu, 6, sizeof(int), &out_features); CHECK_ERROR(err);
@@ -228,14 +230,14 @@ static void linear_gelu_layer(cl_mem input, cl_mem output, int token_size, int i
 #endif
 }
 
-static void mlp_block(cl_mem input, cl_mem output, Network fc1_weight, Network fc1_bias, Network fc2_weight, Network fc2_bias) {
+static void mlp_block(cl_mem input, cl_mem output, cl_mem fc1_weight, cl_mem fc1_bias, cl_mem fc2_weight, cl_mem fc2_bias) {
 	linear_gelu_layer(input, ctx.d_mlp_tmp, total_tokens, embed_dim, hidden_dim, fc1_weight, fc1_bias);
     linear_layer(ctx.d_mlp_tmp, output, total_tokens, hidden_dim, embed_dim, fc2_weight, fc2_bias);
 }
 
 static void Encoder(cl_mem input, cl_mem output,
-    Network ln1_w, Network ln1_b, Network attn_w, Network attn_b, Network attn_out_w, Network attn_out_b,
-    Network ln2_w, Network ln2_b, Network mlp1_w, Network mlp1_b, Network mlp2_w, Network mlp2_b) {
+    cl_mem ln1_w, cl_mem ln1_b, cl_mem attn_w, cl_mem attn_b, cl_mem attn_out_w, cl_mem attn_out_b,
+    cl_mem ln2_w, cl_mem ln2_b, cl_mem mlp1_w, cl_mem mlp1_b, cl_mem mlp2_w, cl_mem mlp2_b) {
 
     layer_norm(input, ctx.d_enc_tmp, ln1_w, ln1_b);
     multihead_attn(ctx.d_enc_tmp, output, attn_w, attn_b, attn_out_w, attn_out_b);
@@ -343,7 +345,7 @@ static void init_kernel(Network* networks) {
         if (networks[i].data == NULL) continue;
         if (networks[i].size <= 0) continue;
 
-        networks[i].buffer = clCreateBuffer(ctx.context,
+        ctx.d_networks[i] = clCreateBuffer(ctx.context,
             CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
             sizeof(float) * networks[i].size,
             networks[i].data,
@@ -452,71 +454,71 @@ void ViT_seq_sb(ImageData* image, Network* networks, float** probabilities) {
         clReleaseEvent(evt_input);
         evt_input = NULL;
 
-        conv2d(ctx.d_img, ctx.d_patch, networks[1], networks[2]);
+        conv2d(ctx.d_img, ctx.d_patch, ctx.d_networks[1], ctx.d_networks[2]);
 
-        pos_embedding(ctx.d_patch, networks[0].buffer, networks[3].buffer, ctx.d_input_embed);
+        pos_embedding(ctx.d_patch, ctx.d_networks[0], ctx.d_networks[3], ctx.d_input_embed);
 
         Encoder(ctx.d_input_embed, ctx.d_hidden[0],
-            networks[4], networks[5], networks[6], networks[7],
-            networks[8], networks[9], networks[10], networks[11],
-            networks[12], networks[13], networks[14], networks[15]);
+            ctx.d_networks[4], ctx.d_networks[5], ctx.d_networks[6], ctx.d_networks[7],
+            ctx.d_networks[8], ctx.d_networks[9], ctx.d_networks[10], ctx.d_networks[11],
+            ctx.d_networks[12], ctx.d_networks[13], ctx.d_networks[14], ctx.d_networks[15]);
 
         Encoder(ctx.d_hidden[0], ctx.d_hidden[1],
-            networks[16], networks[17], networks[18], networks[19],
-            networks[20], networks[21], networks[22], networks[23],
-            networks[24], networks[25], networks[26], networks[27]);
+            ctx.d_networks[16], ctx.d_networks[17], ctx.d_networks[18], ctx.d_networks[19],
+            ctx.d_networks[20], ctx.d_networks[21], ctx.d_networks[22], ctx.d_networks[23],
+            ctx.d_networks[24], ctx.d_networks[25], ctx.d_networks[26], ctx.d_networks[27]);
 
         Encoder(ctx.d_hidden[1], ctx.d_hidden[0],
-            networks[28], networks[29], networks[30], networks[31],
-            networks[32], networks[33], networks[34], networks[35],
-            networks[36], networks[37], networks[38], networks[39]);
+            ctx.d_networks[28], ctx.d_networks[29], ctx.d_networks[30], ctx.d_networks[31],
+            ctx.d_networks[32], ctx.d_networks[33], ctx.d_networks[34], ctx.d_networks[35],
+            ctx.d_networks[36], ctx.d_networks[37], ctx.d_networks[38], ctx.d_networks[39]);
 
         Encoder(ctx.d_hidden[0], ctx.d_hidden[1],
-            networks[40], networks[41], networks[42], networks[43],
-            networks[44], networks[45], networks[46], networks[47],
-            networks[48], networks[49], networks[50], networks[51]);
+            ctx.d_networks[40], ctx.d_networks[41], ctx.d_networks[42], ctx.d_networks[43],
+            ctx.d_networks[44], ctx.d_networks[45], ctx.d_networks[46], ctx.d_networks[47],
+            ctx.d_networks[48], ctx.d_networks[49], ctx.d_networks[50], ctx.d_networks[51]);
 
         Encoder(ctx.d_hidden[1], ctx.d_hidden[0],
-            networks[52], networks[53], networks[54], networks[55],
-            networks[56], networks[57], networks[58], networks[59],
-            networks[60], networks[61], networks[62], networks[63]);
+            ctx.d_networks[52], ctx.d_networks[53], ctx.d_networks[54], ctx.d_networks[55],
+            ctx.d_networks[56], ctx.d_networks[57], ctx.d_networks[58], ctx.d_networks[59],
+            ctx.d_networks[60], ctx.d_networks[61], ctx.d_networks[62], ctx.d_networks[63]);
 
         Encoder(ctx.d_hidden[0], ctx.d_hidden[1],
-            networks[64], networks[65], networks[66], networks[67],
-            networks[68], networks[69], networks[70], networks[71],
-            networks[72], networks[73], networks[74], networks[75]);
+            ctx.d_networks[64], ctx.d_networks[65], ctx.d_networks[66], ctx.d_networks[67],
+            ctx.d_networks[68], ctx.d_networks[69], ctx.d_networks[70], ctx.d_networks[71],
+            ctx.d_networks[72], ctx.d_networks[73], ctx.d_networks[74], ctx.d_networks[75]);
 
         Encoder(ctx.d_hidden[1], ctx.d_hidden[0],
-            networks[76], networks[77], networks[78], networks[79],
-            networks[80], networks[81], networks[82], networks[83],
-            networks[84], networks[85], networks[86], networks[87]);
+            ctx.d_networks[76], ctx.d_networks[77], ctx.d_networks[78], ctx.d_networks[79],
+            ctx.d_networks[80], ctx.d_networks[81], ctx.d_networks[82], ctx.d_networks[83],
+            ctx.d_networks[84], ctx.d_networks[85], ctx.d_networks[86], ctx.d_networks[87]);
 
         Encoder(ctx.d_hidden[0], ctx.d_hidden[1],
-            networks[88], networks[89], networks[90], networks[91],
-            networks[92], networks[93], networks[94], networks[95],
-            networks[96], networks[97], networks[98], networks[99]);
+            ctx.d_networks[88], ctx.d_networks[89], ctx.d_networks[90], ctx.d_networks[91],
+            ctx.d_networks[92], ctx.d_networks[93], ctx.d_networks[94], ctx.d_networks[95],
+            ctx.d_networks[96], ctx.d_networks[97], ctx.d_networks[98], ctx.d_networks[99]);
 
         Encoder(ctx.d_hidden[1], ctx.d_hidden[0],
-            networks[100], networks[101], networks[102], networks[103],
-            networks[104], networks[105], networks[106], networks[107],
-            networks[108], networks[109], networks[110], networks[111]);
+            ctx.d_networks[100], ctx.d_networks[101], ctx.d_networks[102], ctx.d_networks[103],
+            ctx.d_networks[104], ctx.d_networks[105], ctx.d_networks[106], ctx.d_networks[107],
+            ctx.d_networks[108], ctx.d_networks[109], ctx.d_networks[110], ctx.d_networks[111]);
 
         Encoder(ctx.d_hidden[0], ctx.d_hidden[1],
-            networks[112], networks[113], networks[114], networks[115],
-            networks[116], networks[117], networks[118], networks[119],
-            networks[120], networks[121], networks[122], networks[123]);
+            ctx.d_networks[112], ctx.d_networks[113], ctx.d_networks[114], ctx.d_networks[115],
+            ctx.d_networks[116], ctx.d_networks[117], ctx.d_networks[118], ctx.d_networks[119],
+            ctx.d_networks[120], ctx.d_networks[121], ctx.d_networks[122], ctx.d_networks[123]);
 
         Encoder(ctx.d_hidden[1], ctx.d_hidden[0],
-            networks[124], networks[125], networks[126], networks[127],
-            networks[128], networks[129], networks[130], networks[131],
-            networks[132], networks[133], networks[134], networks[135]);
+            ctx.d_networks[124], ctx.d_networks[125], ctx.d_networks[126], ctx.d_networks[127],
+            ctx.d_networks[128], ctx.d_networks[129], ctx.d_networks[130], ctx.d_networks[131],
+            ctx.d_networks[132], ctx.d_networks[133], ctx.d_networks[134], ctx.d_networks[135]);
 
         Encoder(ctx.d_hidden[0], ctx.d_hidden[1],
-            networks[136], networks[137], networks[138], networks[139],
-            networks[140], networks[141], networks[142], networks[143],
-            networks[144], networks[145], networks[146], networks[147]);
+            ctx.d_networks[136], ctx.d_networks[137], ctx.d_networks[138], ctx.d_networks[139],
+            ctx.d_networks[140], ctx.d_networks[141], ctx.d_networks[142], ctx.d_networks[143],
+            ctx.d_networks[144], ctx.d_networks[145], ctx.d_networks[146], ctx.d_networks[147]);
 
-        layer_norm(ctx.d_hidden[1], ctx.d_hidden[0], networks[148], networks[149]);
+        layer_norm(ctx.d_hidden[1], ctx.d_hidden[0], ctx.d_networks[148], ctx.d_networks[149]);
 
         err = clSetKernelArg(ctx.k_extract_cls, 0, sizeof(cl_mem), &ctx.d_hidden[0]); CHECK_ERROR(err);
         err = clSetKernelArg(ctx.k_extract_cls, 1, sizeof(cl_mem), &ctx.d_cls_tokens); CHECK_ERROR(err);
@@ -531,7 +533,7 @@ void ViT_seq_sb(ImageData* image, Network* networks, float** probabilities) {
         profile_event(*ctx.evt_ptr, "Extract CLS Token");
 #endif
 
-        linear_layer(ctx.d_cls_tokens, ctx.d_logits, batch_size, embed_dim, num_classes, networks[150], networks[151]);
+        linear_layer(ctx.d_cls_tokens, ctx.d_logits, batch_size, embed_dim, num_classes, ctx.d_networks[150], ctx.d_networks[151]);
 
         int classes = num_classes;
         err = clSetKernelArg(ctx.k_softmax, 0, sizeof(cl_mem), &ctx.d_logits); CHECK_ERROR(err);
@@ -547,9 +549,9 @@ void ViT_seq_sb(ImageData* image, Network* networks, float** probabilities) {
         size_t copy_bytes = sizeof(float) * num_classes * current_batch_size;
         size_t probs_offset = sizeof(float) * num_classes * i;
 
-        err = clEnqueueCopyBuffer(ctx.q_compute, ctx.d_logits, d_probs, 0, probs_offset, copy_bytes, 0, NULL, ctx.evt_ptr); CHECK_ERROR(err);
+        err = clEnqueueCopyBuffer(ctx.q_compute, ctx.d_logits, d_probs, 0, probs_offset, copy_bytes, 0, NULL, &evt_done[steps]); CHECK_ERROR(err);
 #ifdef PROFILE_MODE
-        profile_event(*ctx.evt_ptr, "Copy Data");
+        profile_event(evt_done[steps], "Copy Data");
 #endif
 		// break; // for test purpose, process only one batch
     }
