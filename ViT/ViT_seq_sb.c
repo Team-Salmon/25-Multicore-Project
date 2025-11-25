@@ -36,7 +36,7 @@
 
 #define enc_size tokens * embed_dim
 
-#define PROFILE_MODE
+// #define PROFILE_MODE
 
 typedef struct __cl_context {
     cl_platform_id platform;
@@ -101,8 +101,6 @@ static void padding_size(size_t*, const size_t*, int);
 
 ////////////////////////////////////// ViT function //////////////////////////////////////
 
-// input : (3, 224, 224)
-// output : (768, 14, 14)
 static void conv2d(cl_mem input, cl_mem output, Network weight, Network bias) {
     cl_int err;
 
@@ -199,7 +197,9 @@ static void linear_layer(cl_mem input, cl_mem output, int token_size, int in_fea
     err = clSetKernelArg(ctx.k_linear, 5, sizeof(int), &in_features); CHECK_ERROR(err);
     err = clSetKernelArg(ctx.k_linear, 6, sizeof(int), &out_features); CHECK_ERROR(err);
 
-    size_t gws[2] = { token_size, out_features };
+    size_t gws[2];
+	gws[0] = (out_features + 3) / 4;
+	gws[1] = token_size;
 
 	padding_size(gws, ctx.lws_linear, 2);
     
@@ -220,7 +220,9 @@ static void linear_gelu_layer(cl_mem input, cl_mem output, int token_size, int i
     err = clSetKernelArg(ctx.k_linear_gelu, 5, sizeof(int), &in_features); CHECK_ERROR(err);
     err = clSetKernelArg(ctx.k_linear_gelu, 6, sizeof(int), &out_features); CHECK_ERROR(err);
 
-    size_t gws[2] = { token_size, out_features };
+    size_t gws[2];
+    gws[0] = (out_features + 3) / 4;
+    gws[1] = token_size;
 
     padding_size(gws, ctx.lws_linear, 2);
     

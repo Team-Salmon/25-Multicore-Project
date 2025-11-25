@@ -1,4 +1,4 @@
-__kernel void linear (
+__kernel void linear(
     __global const float* input,
     __global float* output,
     __global const float* weights,
@@ -7,24 +7,46 @@ __kernel void linear (
     const int K,
     const int N ) {
 
-    int batch_idx = get_global_id(0); 
-    int out_idx = get_global_id(1);
+    int out_group_idx = get_global_id(0); 
+    int token_idx     = get_global_id(1);
 
-    if (out_idx >= N || batch_idx >= M) return;
+    int out_idx_base = out_group_idx * 4;
+    if (out_idx_base >= N || token_idx >= M) return;
 
-    float sum = 0.0f;
-    int input_offset = batch_idx * K;
-    
-    int weight_offset = out_idx * K;
+    float4 acc0 = (float4)(0.0f);
+    float4 acc1 = (float4)(0.0f);
+    float4 acc2 = (float4)(0.0f);
+    float4 acc3 = (float4)(0.0f);
+
+    int in_offset = token_idx * K;
+    int wt_offset0 = (out_idx_base + 0) * K;
+    int wt_offset1 = (out_idx_base + 1) * K;
+    int wt_offset2 = (out_idx_base + 2) * K;
+    int wt_offset3 = (out_idx_base + 3) * K;
 
     for (int k = 0; k < K; k += 4) {
-        float4 in_vec = vload4(0, &input[input_offset + k]);
-        float4 w_vec  = vload4(0, &weights[weight_offset + k]);
-        
-        sum += dot(in_vec, w_vec);
+        float4 in_val = vload4(0, &input[in_offset + k]);
+
+        float4 w0 = vload4(0, &weights[wt_offset0 + k]);
+        float4 w1 = vload4(0, &weights[wt_offset1 + k]);
+        float4 w2 = vload4(0, &weights[wt_offset2 + k]);
+        float4 w3 = vload4(0, &weights[wt_offset3 + k]);
+
+        acc0 = fma(in_val, w0, acc0);
+        acc1 = fma(in_val, w1, acc1);
+        acc2 = fma(in_val, w2, acc2);
+        acc3 = fma(in_val, w3, acc3);
     }
 
-    output[batch_idx * N + out_idx] = sum + bias[out_idx];
+    float sum0 = acc0.x + acc0.y + acc0.z + acc0.w;
+    float sum1 = acc1.x + acc1.y + acc1.z + acc1.w;
+    float sum2 = acc2.x + acc2.y + acc2.z + acc2.w;
+    float sum3 = acc3.x + acc3.y + acc3.z + acc3.w;
+
+    output[token_idx * N + (out_idx_base + 0)] = sum0 + bias[out_idx_base + 0];
+    output[token_idx * N + (out_idx_base + 1)] = sum1 + bias[out_idx_base + 1];
+    output[token_idx * N + (out_idx_base + 2)] = sum2 + bias[out_idx_base + 2];
+    output[token_idx * N + (out_idx_base + 3)] = sum3 + bias[out_idx_base + 3];
 }
 
 inline float gelu(float x) {
@@ -61,25 +83,46 @@ __kernel void linear_gelu (
     const int K,
     const int N ) {
 
-    int batch_idx = get_global_id(0); 
-    int out_idx = get_global_id(1);
+        int out_group_idx = get_global_id(0); 
+    int token_idx     = get_global_id(1);
 
-    if (out_idx >= N || batch_idx >= M) return;
+    int out_idx_base = out_group_idx * 4;
+    if (out_idx_base >= N || token_idx >= M) return;
 
-    float sum = 0.0f;
-    int input_offset = batch_idx * K;
-    
-    int weight_offset = out_idx * K;
+    float4 acc0 = (float4)(0.0f);
+    float4 acc1 = (float4)(0.0f);
+    float4 acc2 = (float4)(0.0f);
+    float4 acc3 = (float4)(0.0f);
+
+    int in_offset = token_idx * K;
+    int wt_offset0 = (out_idx_base + 0) * K;
+    int wt_offset1 = (out_idx_base + 1) * K;
+    int wt_offset2 = (out_idx_base + 2) * K;
+    int wt_offset3 = (out_idx_base + 3) * K;
 
     for (int k = 0; k < K; k += 4) {
-        float4 in_vec = vload4(0, &input[input_offset + k]);
-        float4 w_vec  = vload4(0, &weights[weight_offset + k]);
-        
-        sum += dot(in_vec, w_vec);
+        float4 in_val = vload4(0, &input[in_offset + k]);
+
+        float4 w0 = vload4(0, &weights[wt_offset0 + k]);
+        float4 w1 = vload4(0, &weights[wt_offset1 + k]);
+        float4 w2 = vload4(0, &weights[wt_offset2 + k]);
+        float4 w3 = vload4(0, &weights[wt_offset3 + k]);
+
+        acc0 = fma(in_val, w0, acc0);
+        acc1 = fma(in_val, w1, acc1);
+        acc2 = fma(in_val, w2, acc2);
+        acc3 = fma(in_val, w3, acc3);
     }
 
-    float x = sum + bias[out_idx];    
-    output[batch_idx * N + out_idx] = gelu(x);
+    float sum0 = acc0.x + acc0.y + acc0.z + acc0.w;
+    float sum1 = acc1.x + acc1.y + acc1.z + acc1.w;
+    float sum2 = acc2.x + acc2.y + acc2.z + acc2.w;
+    float sum3 = acc3.x + acc3.y + acc3.z + acc3.w;
+
+    output[token_idx * N + (out_idx_base + 0)] = gelu(sum0 + bias[out_idx_base + 0]);
+    output[token_idx * N + (out_idx_base + 1)] = gelu(sum1 + bias[out_idx_base + 1]);
+    output[token_idx * N + (out_idx_base + 2)] = gelu(sum2 + bias[out_idx_base + 2]);
+    output[token_idx * N + (out_idx_base + 3)] = gelu(sum3 + bias[out_idx_base + 3]);
 }
 
 __kernel void attn_score (
