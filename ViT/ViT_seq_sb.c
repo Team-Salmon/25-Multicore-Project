@@ -198,7 +198,7 @@ static void linear_layer(cl_mem input, cl_mem output, int token_size, int in_fea
     err = clSetKernelArg(ctx.k_linear, 6, sizeof(int), &out_features); CHECK_ERROR(err);
 
     size_t gws[2];
-	gws[0] = (out_features + 3) / 4;
+	gws[0] = (out_features + 7) / 8;
 	gws[1] = token_size;
 
 	padding_size(gws, ctx.lws_linear, 2);
@@ -221,7 +221,7 @@ static void linear_gelu_layer(cl_mem input, cl_mem output, int token_size, int i
     err = clSetKernelArg(ctx.k_linear_gelu, 6, sizeof(int), &out_features); CHECK_ERROR(err);
 
     size_t gws[2];
-    gws[0] = (out_features + 3) / 4;
+    gws[0] = (out_features + 7) / 8;
     gws[1] = token_size;
 
     padding_size(gws, ctx.lws_linear, 2);
