@@ -266,46 +266,61 @@ __kernel void linear_gelu (
     vstore4(res1, 0, out_ptr + 4);
 }
 
-__kernel void attn_score (
+__kernel void attn_score(
     __global const float* QKV,
-    __global float* scores ) {
+    __global float* scores) {
 
     int i = get_global_id(0);
     int j = get_global_id(1);
     int z = get_global_id(2);
 
     int batch_idx = z / NUM_HEADS;
-    int head_idx  = z % NUM_HEADS;
+    int head_idx = z % NUM_HEADS;
+    int j_start = j * 4;
 
-    if (i >= TOKENS || j >= TOKENS || batch_idx >= BATCH_SIZE) return;
+    if (i >= TOKENS || j_start >= TOKENS || batch_idx >= BATCH_SIZE) return;
 
     int head_offset = head_idx * HEAD_DIM;
+    int q_offset_base = (batch_idx * TOKENS + i) * QKV_DIM + head_offset;
+    int k_chunk_base = (batch_idx * TOKENS) * QKV_DIM + EMBED_DIM + head_offset;
 
-    int token_offset_q = (batch_idx * TOKENS + i) * QKV_DIM; // QKV_DIM = 768 * 3
-    int token_offset_k = (batch_idx * TOKENS + j) * QKV_DIM;
+    bool has_1 = (j_start + 1 < TOKENS);
+    bool has_2 = (j_start + 2 < TOKENS);
+    bool has_3 = (j_start + 3 < TOKENS);
 
-    int q_start = token_offset_q + head_offset; 
-    int k_start = token_offset_k + EMBED_DIM + head_offset;
+    int k_addr_0 = k_chunk_base + (j_start + 0) * QKV_DIM;
 
-    float sum = 0.0f;
+    int k_addr_1 = (has_1) ? (k_chunk_base + (j_start + 1) * QKV_DIM) : k_addr_0;
+    int k_addr_2 = (has_2) ? (k_chunk_base + (j_start + 2) * QKV_DIM) : k_addr_0;
+    int k_addr_3 = (has_3) ? (k_chunk_base + (j_start + 3) * QKV_DIM) : k_addr_0;;
 
-    #pragma unroll
+    float sum0 = 0.0f;
+    float sum1 = 0.0f;
+    float sum2 = 0.0f;
+    float sum3 = 0.0f;
+
     for (int d = 0; d < HEAD_DIM; d += 4) {
-        float4 q_vec = vload4(0, &QKV[q_start + d]);
-        float4 k_vec = vload4(0, &QKV[k_start + d]);
-        
-        sum += dot(q_vec, k_vec);
+        float4 q_vec = vload4(0, &QKV[q_offset_base + d]);
+
+        sum0 += dot(q_vec, vload4(0, &QKV[k_addr_0 + d]));
+
+        if (has_1) sum1 += dot(q_vec, vload4(0, &QKV[k_addr_1 + d]));
+        if (has_2) sum2 += dot(q_vec, vload4(0, &QKV[k_addr_2 + d]));
+        if (has_3) sum3 += dot(q_vec, vload4(0, &QKV[k_addr_3 + d]));
     }
 
-    int out_idx = (batch_idx * NUM_HEADS + head_idx) * (TOKENS * TOKENS) + (i * TOKENS + j);
-    
-    float scale = 1.0f / sqrt((float)HEAD_DIM);
-    scores[out_idx] = sum * scale;
+    float scale = 0.125f;
+    int out_base = (batch_idx * NUM_HEADS + head_idx) * (TOKENS * TOKENS) + (i * TOKENS + j_start);
+
+    scores[out_base + 0] = sum0 * scale;
+    if (has_1) scores[out_base + 1] = sum1 * scale;
+    if (has_2) scores[out_base + 2] = sum2 * scale;
+    if (has_3) scores[out_base + 3] = sum3 * scale;
 }
 
-__kernel void softmax (
+__kernel void softmax(
     __global float* scores,
-    const int size ) {
+    const int size) {
 
     int row = get_global_id(0);
     int offset = row * size;
@@ -331,35 +346,36 @@ __kernel void softmax (
 __kernel void attn_context(
     __global const float* scores,
     __global const float* QKV,
-    __global float* attn_out)  {
+    __global float* attn_out) {
 
     int i = get_global_id(0);
     int d = get_global_id(1);
     int z = get_global_id(2);
 
+    int d_start = d * 4;
     int batch_idx = z / NUM_HEADS;
-    int head_idx  = z % NUM_HEADS;
-    
+    int head_idx = z % NUM_HEADS;
+
     if (i >= TOKENS || d >= HEAD_DIM || batch_idx >= BATCH_SIZE) return;
 
     int score_base = (batch_idx * NUM_HEADS + head_idx) * (TOKENS * TOKENS) + i * TOKENS;
-    int v_base_offset = 2 * EMBED_DIM + head_idx * HEAD_DIM + d; // V´Â 2¹øÂ°
+    int v_base_offset = 2 * EMBED_DIM + head_idx * HEAD_DIM + d_start;
+    int qkv_batch_base = batch_idx * TOKENS * QKV_DIM;
 
-    float sum = 0.0f;
+    float4 sum = (float4)(0.0f);
 
     for (int j = 0; j < TOKENS; ++j) {
         float s = scores[score_base + j];
-        
-        int v_idx = (batch_idx * TOKENS + j) * QKV_DIM + v_base_offset;
-        float v = QKV[v_idx];
-        
+
+        int v_idx = qkv_batch_base + j * QKV_DIM + v_base_offset;
+        float4 v = vload4(0, &QKV[v_idx]);
+
         sum += s * v;
     }
 
-    int out_idx = (batch_idx * TOKENS + i) * EMBED_DIM + (head_idx * HEAD_DIM + d);
-    attn_out[out_idx] = sum;
+    int out_idx = (batch_idx * TOKENS + i) * EMBED_DIM + (head_idx * HEAD_DIM + d_start);
+    vstore4(sum, 0, &attn_out[out_idx]);
 }
-
 __kernel void patch_embedding (
     __global const float* input,
     __global float* output,
