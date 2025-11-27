@@ -26,21 +26,39 @@ __kernel void linear(
     const int K,
     const int N ) {
 
+    // Global ID 0: Output Channel Group (8 channels per thread)
     int out_group_idx = get_global_id(0);
-    int token_idx     = get_global_id(1);
-    int out_idx_base  = out_group_idx * 8;
+    // Global ID 1: Token Pair Group (2 tokens per thread)
+    int token_pair_idx = get_global_id(1);
 
-    if (out_idx_base >= N || token_idx >= M) return;
+    int out_idx_base = out_group_idx * 8;
+    int token_idx_0  = token_pair_idx * 2;
+    int token_idx_1  = token_idx_0 + 1;
 
-    float4 acc0 = 0.0f; float4 acc1 = 0.0f; float4 acc2 = 0.0f; float4 acc3 = 0.0f;
-    float4 acc4 = 0.0f; float4 acc5 = 0.0f; float4 acc6 = 0.0f; float4 acc7 = 0.0f;
+    // 범위 체크: 첫 번째 토큰이나 출력 인덱스가 범위를 벗어나면 종료
+    if (out_idx_base >= N || token_idx_0 >= M) return;
 
-    int in_offset = token_idx * K;
-    int wt_base   = out_idx_base * K;
+    // 두 번째 토큰이 존재하는지 확인 (M이 홀수일 경우 대비)
+    bool has_second_token = (token_idx_1 < M);
 
-    for (int k = 0; k < K; k += 16) {
-        float4 in_val = vload4(0, &input[in_offset + k]);
+    // --- Accumulators (레지스터 공간 확보) ---
+    // Token 0에 대한 결과 누적 (8개 채널)
+    float4 acc0_t0 = 0.0f; float4 acc1_t0 = 0.0f; float4 acc2_t0 = 0.0f; float4 acc3_t0 = 0.0f;
+    float4 acc4_t0 = 0.0f; float4 acc5_t0 = 0.0f; float4 acc6_t0 = 0.0f; float4 acc7_t0 = 0.0f;
+
+    // Token 1에 대한 결과 누적 (8개 채널)
+    float4 acc0_t1 = 0.0f; float4 acc1_t1 = 0.0f; float4 acc2_t1 = 0.0f; float4 acc3_t1 = 0.0f;
+    float4 acc4_t1 = 0.0f; float4 acc5_t1 = 0.0f; float4 acc6_t1 = 0.0f; float4 acc7_t1 = 0.0f;
+
+    int in_offset_0 = token_idx_0 * K;
+    int in_offset_1 = token_idx_1 * K; // boundary safe calculation not needed here, handled in load
+    int wt_base     = out_idx_base * K;
+
+    // --- Main Loop ---
+    // 레지스터 압박을 줄이기 위해 k+=4 (float4 1개씩) 처리
+    for (int k = 0; k < K; k += 4) {
         
+        // [Critical Optimization] Weight Load: 한 번 읽어서 두 토큰에 공유!
         float4 w0 = vload4(0, &weights[wt_base + 0*K + k]);
         float4 w1 = vload4(0, &weights[wt_base + 1*K + k]);
         float4 w2 = vload4(0, &weights[wt_base + 2*K + k]);
@@ -50,97 +68,66 @@ __kernel void linear(
         float4 w6 = vload4(0, &weights[wt_base + 6*K + k]);
         float4 w7 = vload4(0, &weights[wt_base + 7*K + k]);
 
-        acc0 = fma(in_val, w0, acc0);
-        acc1 = fma(in_val, w1, acc1);
-        acc2 = fma(in_val, w2, acc2);
-        acc3 = fma(in_val, w3, acc3);
-        acc4 = fma(in_val, w4, acc4);
-        acc5 = fma(in_val, w5, acc5);
-        acc6 = fma(in_val, w6, acc6);
-        acc7 = fma(in_val, w7, acc7);
-
-        in_val = vload4(0, &input[in_offset + k + 4]);
+        // 1. Process Token 0
+        float4 in_val0 = vload4(0, &input[in_offset_0 + k]);
         
-        w0 = vload4(0, &weights[wt_base + 0*K + k + 4]);
-        w1 = vload4(0, &weights[wt_base + 1*K + k + 4]);
-        w2 = vload4(0, &weights[wt_base + 2*K + k + 4]);
-        w3 = vload4(0, &weights[wt_base + 3*K + k + 4]);
-        w4 = vload4(0, &weights[wt_base + 4*K + k + 4]);
-        w5 = vload4(0, &weights[wt_base + 5*K + k + 4]);
-        w6 = vload4(0, &weights[wt_base + 6*K + k + 4]);
-        w7 = vload4(0, &weights[wt_base + 7*K + k + 4]);
+        acc0_t0 = fma(in_val0, w0, acc0_t0);
+        acc1_t0 = fma(in_val0, w1, acc1_t0);
+        acc2_t0 = fma(in_val0, w2, acc2_t0);
+        acc3_t0 = fma(in_val0, w3, acc3_t0);
+        acc4_t0 = fma(in_val0, w4, acc4_t0);
+        acc5_t0 = fma(in_val0, w5, acc5_t0);
+        acc6_t0 = fma(in_val0, w6, acc6_t0);
+        acc7_t0 = fma(in_val0, w7, acc7_t0);
 
-        acc0 = fma(in_val, w0, acc0);
-        acc1 = fma(in_val, w1, acc1);
-        acc2 = fma(in_val, w2, acc2);
-        acc3 = fma(in_val, w3, acc3);
-        acc4 = fma(in_val, w4, acc4);
-        acc5 = fma(in_val, w5, acc5);
-        acc6 = fma(in_val, w6, acc6);
-        acc7 = fma(in_val, w7, acc7);
+        // 2. Process Token 1 (If exists) - Weight 재사용!
+        if (has_second_token) {
+            float4 in_val1 = vload4(0, &input[in_offset_1 + k]);
 
-        in_val = vload4(0, &input[in_offset + k + 8]);
-        
-        w0 = vload4(0, &weights[wt_base + 0*K + k + 8]);
-        w1 = vload4(0, &weights[wt_base + 1*K + k + 8]);
-        w2 = vload4(0, &weights[wt_base + 2*K + k + 8]);
-        w3 = vload4(0, &weights[wt_base + 3*K + k + 8]);
-        w4 = vload4(0, &weights[wt_base + 4*K + k + 8]);
-        w5 = vload4(0, &weights[wt_base + 5*K + k + 8]);
-        w6 = vload4(0, &weights[wt_base + 6*K + k + 8]);
-        w7 = vload4(0, &weights[wt_base + 7*K + k + 8]);
-
-        acc0 = fma(in_val, w0, acc0);
-        acc1 = fma(in_val, w1, acc1);
-        acc2 = fma(in_val, w2, acc2);
-        acc3 = fma(in_val, w3, acc3);
-        acc4 = fma(in_val, w4, acc4);
-        acc5 = fma(in_val, w5, acc5);
-        acc6 = fma(in_val, w6, acc6);
-        acc7 = fma(in_val, w7, acc7);
-        
-        in_val = vload4(0, &input[in_offset + k + 12]);
-        
-        w0 = vload4(0, &weights[wt_base + 0*K + k + 12]);
-        w1 = vload4(0, &weights[wt_base + 1*K + k + 12]);
-        w2 = vload4(0, &weights[wt_base + 2*K + k + 12]);
-        w3 = vload4(0, &weights[wt_base + 3*K + k + 12]);
-        w4 = vload4(0, &weights[wt_base + 4*K + k + 12]);
-        w5 = vload4(0, &weights[wt_base + 5*K + k + 12]);
-        w6 = vload4(0, &weights[wt_base + 6*K + k + 12]);
-        w7 = vload4(0, &weights[wt_base + 7*K + k + 12]);
-
-        acc0 = fma(in_val, w0, acc0);
-        acc1 = fma(in_val, w1, acc1);
-        acc2 = fma(in_val, w2, acc2);
-        acc3 = fma(in_val, w3, acc3);
-        acc4 = fma(in_val, w4, acc4);
-        acc5 = fma(in_val, w5, acc5);
-        acc6 = fma(in_val, w6, acc6);
-        acc7 = fma(in_val, w7, acc7);
+            acc0_t1 = fma(in_val1, w0, acc0_t1);
+            acc1_t1 = fma(in_val1, w1, acc1_t1);
+            acc2_t1 = fma(in_val1, w2, acc2_t1);
+            acc3_t1 = fma(in_val1, w3, acc3_t1);
+            acc4_t1 = fma(in_val1, w4, acc4_t1);
+            acc5_t1 = fma(in_val1, w5, acc5_t1);
+            acc6_t1 = fma(in_val1, w6, acc6_t1);
+            acc7_t1 = fma(in_val1, w7, acc7_t1);
+        }
     }
 
-    float sum0 = acc0.x + acc0.y + acc0.z + acc0.w;
-    float sum1 = acc1.x + acc1.y + acc1.z + acc1.w;
-    float sum2 = acc2.x + acc2.y + acc2.z + acc2.w;
-    float sum3 = acc3.x + acc3.y + acc3.z + acc3.w;
-    float sum4 = acc4.x + acc4.y + acc4.z + acc4.w;
-    float sum5 = acc5.x + acc5.y + acc5.z + acc5.w;
-    float sum6 = acc6.x + acc6.y + acc6.z + acc6.w;
-    float sum7 = acc7.x + acc7.y + acc7.z + acc7.w;
+    // --- Helper Macro for Reduction ---
+    #define REDUCE_AND_STORE(acc0, acc1, acc2, acc3, acc4, acc5, acc6, acc7, t_idx) \
+    { \
+        float sum0 = acc0.x + acc0.y + acc0.z + acc0.w; \
+        float sum1 = acc1.x + acc1.y + acc1.z + acc1.w; \
+        float sum2 = acc2.x + acc2.y + acc2.z + acc2.w; \
+        float sum3 = acc3.x + acc3.y + acc3.z + acc3.w; \
+        float sum4 = acc4.x + acc4.y + acc4.z + acc4.w; \
+        float sum5 = acc5.x + acc5.y + acc5.z + acc5.w; \
+        float sum6 = acc6.x + acc6.y + acc6.z + acc6.w; \
+        float sum7 = acc7.x + acc7.y + acc7.z + acc7.w; \
+        \
+        float4 b0 = vload4(0, &bias[out_idx_base + 0]); \
+        float4 b1 = vload4(0, &bias[out_idx_base + 4]); \
+        \
+        float4 res0 = (float4)(sum0, sum1, sum2, sum3) + b0; \
+        float4 res1 = (float4)(sum4, sum5, sum6, sum7) + b1; \
+        \
+        __global float* out_ptr = &output[t_idx * N + out_idx_base]; \
+        vstore4(res0, 0, out_ptr + 0); \
+        vstore4(res1, 0, out_ptr + 4); \
+    }
 
-    float4 b0 = vload4(0, &bias[out_idx_base + 0]);
-    float4 b1 = vload4(0, &bias[out_idx_base + 4]);
+    // Store Token 0 Result
+    REDUCE_AND_STORE(acc0_t0, acc1_t0, acc2_t0, acc3_t0, acc4_t0, acc5_t0, acc6_t0, acc7_t0, token_idx_0);
 
-    float4 res0 = (float4)(sum0, sum1, sum2, sum3) + b0;
-    float4 res1 = (float4)(sum4, sum5, sum6, sum7) + b1;
-
-    __global float* out_ptr = &output[token_idx * N + out_idx_base];
-    vstore4(res0, 0, out_ptr + 0);
-    vstore4(res1, 0, out_ptr + 4);
+    // Store Token 1 Result
+    if (has_second_token) {
+        REDUCE_AND_STORE(acc0_t1, acc1_t1, acc2_t1, acc3_t1, acc4_t1, acc5_t1, acc6_t1, acc7_t1, token_idx_1);
+    }
 }
 
-__kernel void linear_gelu (
+__kernel void linear_gelu(
     __global const float* input,
     __global float* output,
     __global const float* weights,
@@ -149,21 +136,35 @@ __kernel void linear_gelu (
     const int K,
     const int N ) {
 
-        int out_group_idx = get_global_id(0);
-    int token_idx     = get_global_id(1);
-    int out_idx_base  = out_group_idx * 8;
+    // Global ID 0: Output Channel Group (8 channels)
+    int out_group_idx = get_global_id(0);
+    // Global ID 1: Token Pair Group (2 tokens)
+    int token_pair_idx = get_global_id(1);
 
-    if (out_idx_base >= N || token_idx >= M) return;
+    int out_idx_base = out_group_idx * 8;
+    int token_idx_0  = token_pair_idx * 2;
+    int token_idx_1  = token_idx_0 + 1;
 
-    float4 acc0 = 0.0f; float4 acc1 = 0.0f; float4 acc2 = 0.0f; float4 acc3 = 0.0f;
-    float4 acc4 = 0.0f; float4 acc5 = 0.0f; float4 acc6 = 0.0f; float4 acc7 = 0.0f;
+    // 범위 체크
+    if (out_idx_base >= N || token_idx_0 >= M) return;
 
-    int in_offset = token_idx * K;
-    int wt_base   = out_idx_base * K;
+    bool has_second_token = (token_idx_1 < M);
 
-    for (int k = 0; k < K; k += 16) {
-        float4 in_val = vload4(0, &input[in_offset + k]);
-        
+    // --- Accumulators (Token 0) ---
+    float4 acc0_t0 = 0.0f; float4 acc1_t0 = 0.0f; float4 acc2_t0 = 0.0f; float4 acc3_t0 = 0.0f;
+    float4 acc4_t0 = 0.0f; float4 acc5_t0 = 0.0f; float4 acc6_t0 = 0.0f; float4 acc7_t0 = 0.0f;
+
+    // --- Accumulators (Token 1) ---
+    float4 acc0_t1 = 0.0f; float4 acc1_t1 = 0.0f; float4 acc2_t1 = 0.0f; float4 acc3_t1 = 0.0f;
+    float4 acc4_t1 = 0.0f; float4 acc5_t1 = 0.0f; float4 acc6_t1 = 0.0f; float4 acc7_t1 = 0.0f;
+
+    int in_offset_0 = token_idx_0 * K;
+    int in_offset_1 = token_idx_1 * K;
+    int wt_base     = out_idx_base * K;
+
+    // --- Main Loop (Weight Reuse) ---
+    for (int k = 0; k < K; k += 4) {
+        // 1. Weight Load (한 번 읽어서 두 토큰에 공유!)
         float4 w0 = vload4(0, &weights[wt_base + 0*K + k]);
         float4 w1 = vload4(0, &weights[wt_base + 1*K + k]);
         float4 w2 = vload4(0, &weights[wt_base + 2*K + k]);
@@ -173,139 +174,137 @@ __kernel void linear_gelu (
         float4 w6 = vload4(0, &weights[wt_base + 6*K + k]);
         float4 w7 = vload4(0, &weights[wt_base + 7*K + k]);
 
-        acc0 = fma(in_val, w0, acc0);
-        acc1 = fma(in_val, w1, acc1);
-        acc2 = fma(in_val, w2, acc2);
-        acc3 = fma(in_val, w3, acc3);
-        acc4 = fma(in_val, w4, acc4);
-        acc5 = fma(in_val, w5, acc5);
-        acc6 = fma(in_val, w6, acc6);
-        acc7 = fma(in_val, w7, acc7);
-
-        in_val = vload4(0, &input[in_offset + k + 4]);
+        // 2. Token 0 Compute
+        float4 in_val0 = vload4(0, &input[in_offset_0 + k]);
         
-        w0 = vload4(0, &weights[wt_base + 0*K + k + 4]);
-        w1 = vload4(0, &weights[wt_base + 1*K + k + 4]);
-        w2 = vload4(0, &weights[wt_base + 2*K + k + 4]);
-        w3 = vload4(0, &weights[wt_base + 3*K + k + 4]);
-        w4 = vload4(0, &weights[wt_base + 4*K + k + 4]);
-        w5 = vload4(0, &weights[wt_base + 5*K + k + 4]);
-        w6 = vload4(0, &weights[wt_base + 6*K + k + 4]);
-        w7 = vload4(0, &weights[wt_base + 7*K + k + 4]);
+        acc0_t0 = fma(in_val0, w0, acc0_t0);
+        acc1_t0 = fma(in_val0, w1, acc1_t0);
+        acc2_t0 = fma(in_val0, w2, acc2_t0);
+        acc3_t0 = fma(in_val0, w3, acc3_t0);
+        acc4_t0 = fma(in_val0, w4, acc4_t0);
+        acc5_t0 = fma(in_val0, w5, acc5_t0);
+        acc6_t0 = fma(in_val0, w6, acc6_t0);
+        acc7_t0 = fma(in_val0, w7, acc7_t0);
 
-        acc0 = fma(in_val, w0, acc0);
-        acc1 = fma(in_val, w1, acc1);
-        acc2 = fma(in_val, w2, acc2);
-        acc3 = fma(in_val, w3, acc3);
-        acc4 = fma(in_val, w4, acc4);
-        acc5 = fma(in_val, w5, acc5);
-        acc6 = fma(in_val, w6, acc6);
-        acc7 = fma(in_val, w7, acc7);
-
-        in_val = vload4(0, &input[in_offset + k + 8]);
-        
-        w0 = vload4(0, &weights[wt_base + 0*K + k + 8]);
-        w1 = vload4(0, &weights[wt_base + 1*K + k + 8]);
-        w2 = vload4(0, &weights[wt_base + 2*K + k + 8]);
-        w3 = vload4(0, &weights[wt_base + 3*K + k + 8]);
-        w4 = vload4(0, &weights[wt_base + 4*K + k + 8]);
-        w5 = vload4(0, &weights[wt_base + 5*K + k + 8]);
-        w6 = vload4(0, &weights[wt_base + 6*K + k + 8]);
-        w7 = vload4(0, &weights[wt_base + 7*K + k + 8]);
-
-        acc0 = fma(in_val, w0, acc0);
-        acc1 = fma(in_val, w1, acc1);
-        acc2 = fma(in_val, w2, acc2);
-        acc3 = fma(in_val, w3, acc3);
-        acc4 = fma(in_val, w4, acc4);
-        acc5 = fma(in_val, w5, acc5);
-        acc6 = fma(in_val, w6, acc6);
-        acc7 = fma(in_val, w7, acc7);
-        
-        in_val = vload4(0, &input[in_offset + k + 12]);
-        
-        w0 = vload4(0, &weights[wt_base + 0*K + k + 12]);
-        w1 = vload4(0, &weights[wt_base + 1*K + k + 12]);
-        w2 = vload4(0, &weights[wt_base + 2*K + k + 12]);
-        w3 = vload4(0, &weights[wt_base + 3*K + k + 12]);
-        w4 = vload4(0, &weights[wt_base + 4*K + k + 12]);
-        w5 = vload4(0, &weights[wt_base + 5*K + k + 12]);
-        w6 = vload4(0, &weights[wt_base + 6*K + k + 12]);
-        w7 = vload4(0, &weights[wt_base + 7*K + k + 12]);
-
-        acc0 = fma(in_val, w0, acc0);
-        acc1 = fma(in_val, w1, acc1);
-        acc2 = fma(in_val, w2, acc2);
-        acc3 = fma(in_val, w3, acc3);
-        acc4 = fma(in_val, w4, acc4);
-        acc5 = fma(in_val, w5, acc5);
-        acc6 = fma(in_val, w6, acc6);
-        acc7 = fma(in_val, w7, acc7);
+        // 3. Token 1 Compute (Only if valid)
+        if (has_second_token) {
+            float4 in_val1 = vload4(0, &input[in_offset_1 + k]);
+            
+            acc0_t1 = fma(in_val1, w0, acc0_t1);
+            acc1_t1 = fma(in_val1, w1, acc1_t1);
+            acc2_t1 = fma(in_val1, w2, acc2_t1);
+            acc3_t1 = fma(in_val1, w3, acc3_t1);
+            acc4_t1 = fma(in_val1, w4, acc4_t1);
+            acc5_t1 = fma(in_val1, w5, acc5_t1);
+            acc6_t1 = fma(in_val1, w6, acc6_t1);
+            acc7_t1 = fma(in_val1, w7, acc7_t1);
+        }
     }
 
-    float sum0 = acc0.x + acc0.y + acc0.z + acc0.w;
-    float sum1 = acc1.x + acc1.y + acc1.z + acc1.w;
-    float sum2 = acc2.x + acc2.y + acc2.z + acc2.w;
-    float sum3 = acc3.x + acc3.y + acc3.z + acc3.w;
-    float sum4 = acc4.x + acc4.y + acc4.z + acc4.w;
-    float sum5 = acc5.x + acc5.y + acc5.z + acc5.w;
-    float sum6 = acc6.x + acc6.y + acc6.z + acc6.w;
-    float sum7 = acc7.x + acc7.y + acc7.z + acc7.w;
-
+    // --- Bias Load (Shared) ---
     float4 b0 = vload4(0, &bias[out_idx_base + 0]);
     float4 b1 = vload4(0, &bias[out_idx_base + 4]);
 
-    float4 temp0 = (float4)(sum0, sum1, sum2, sum3) + b0;
-    float4 temp1 = (float4)(sum4, sum5, sum6, sum7) + b1;
+    // --- Final Reduction & GELU & Store (Token 0) ---
+    {
+        float sum0 = acc0_t0.x + acc0_t0.y + acc0_t0.z + acc0_t0.w;
+        float sum1 = acc1_t0.x + acc1_t0.y + acc1_t0.z + acc1_t0.w;
+        float sum2 = acc2_t0.x + acc2_t0.y + acc2_t0.z + acc2_t0.w;
+        float sum3 = acc3_t0.x + acc3_t0.y + acc3_t0.z + acc3_t0.w;
+        float sum4 = acc4_t0.x + acc4_t0.y + acc4_t0.z + acc4_t0.w;
+        float sum5 = acc5_t0.x + acc5_t0.y + acc5_t0.z + acc5_t0.w;
+        float sum6 = acc6_t0.x + acc6_t0.y + acc6_t0.z + acc6_t0.w;
+        float sum7 = acc7_t0.x + acc7_t0.y + acc7_t0.z + acc7_t0.w;
 
-    float4 res0 = (float4)(gelu(temp0.x), gelu(temp0.y), gelu(temp0.z), gelu(temp0.w));
-    float4 res1 = (float4)(gelu(temp1.x), gelu(temp1.y), gelu(temp1.z), gelu(temp1.w));
+        float4 temp0 = (float4)(sum0, sum1, sum2, sum3) + b0;
+        float4 temp1 = (float4)(sum4, sum5, sum6, sum7) + b1;
 
-    __global float* out_ptr = &output[token_idx * N + out_idx_base];
-    vstore4(res0, 0, out_ptr + 0);
-    vstore4(res1, 0, out_ptr + 4);
+        float4 res0 = (float4)(gelu(temp0.x), gelu(temp0.y), gelu(temp0.z), gelu(temp0.w));
+        float4 res1 = (float4)(gelu(temp1.x), gelu(temp1.y), gelu(temp1.z), gelu(temp1.w));
+
+        __global float* out_ptr = &output[token_idx_0 * N + out_idx_base];
+        vstore4(res0, 0, out_ptr + 0);
+        vstore4(res1, 0, out_ptr + 4);
+    }
+
+    // --- Final Reduction & GELU & Store (Token 1) ---
+    if (has_second_token) {
+        float sum0 = acc0_t1.x + acc0_t1.y + acc0_t1.z + acc0_t1.w;
+        float sum1 = acc1_t1.x + acc1_t1.y + acc1_t1.z + acc1_t1.w;
+        float sum2 = acc2_t1.x + acc2_t1.y + acc2_t1.z + acc2_t1.w;
+        float sum3 = acc3_t1.x + acc3_t1.y + acc3_t1.z + acc3_t1.w;
+        float sum4 = acc4_t1.x + acc4_t1.y + acc4_t1.z + acc4_t1.w;
+        float sum5 = acc5_t1.x + acc5_t1.y + acc5_t1.z + acc5_t1.w;
+        float sum6 = acc6_t1.x + acc6_t1.y + acc6_t1.z + acc6_t1.w;
+        float sum7 = acc7_t1.x + acc7_t1.y + acc7_t1.z + acc7_t1.w;
+
+        float4 temp0 = (float4)(sum0, sum1, sum2, sum3) + b0;
+        float4 temp1 = (float4)(sum4, sum5, sum6, sum7) + b1;
+
+        float4 res0 = (float4)(gelu(temp0.x), gelu(temp0.y), gelu(temp0.z), gelu(temp0.w));
+        float4 res1 = (float4)(gelu(temp1.x), gelu(temp1.y), gelu(temp1.z), gelu(temp1.w));
+
+        __global float* out_ptr = &output[token_idx_1 * N + out_idx_base];
+        vstore4(res0, 0, out_ptr + 0);
+        vstore4(res1, 0, out_ptr + 4);
+    }
 }
 
-__kernel void attn_score (
+__kernel void attn_score(
     __global const float* QKV,
-    __global float* scores ) {
+    __global float* scores) {
 
     int i = get_global_id(0);
     int j = get_global_id(1);
     int z = get_global_id(2);
 
     int batch_idx = z / NUM_HEADS;
-    int head_idx  = z % NUM_HEADS;
+    int head_idx = z % NUM_HEADS;
+    int j_start = j * 4;
 
-    if (i >= TOKENS || j >= TOKENS || batch_idx >= BATCH_SIZE) return;
+    if (i >= TOKENS || j_start >= TOKENS || batch_idx >= BATCH_SIZE) return;
 
     int head_offset = head_idx * HEAD_DIM;
+    int q_offset_base = (batch_idx * TOKENS + i) * QKV_DIM + head_offset;
+    int k_chunk_base = (batch_idx * TOKENS) * QKV_DIM + EMBED_DIM + head_offset;
 
-    int token_offset_q = (batch_idx * TOKENS + i) * QKV_DIM; // QKV_DIM = 768 * 3
-    int token_offset_k = (batch_idx * TOKENS + j) * QKV_DIM;
+    bool has_1 = (j_start + 1 < TOKENS);
+    bool has_2 = (j_start + 2 < TOKENS);
+    bool has_3 = (j_start + 3 < TOKENS);
 
-    int q_start = token_offset_q + head_offset; 
-    int k_start = token_offset_k + EMBED_DIM + head_offset;
+    int k_addr_0 = k_chunk_base + (j_start + 0) * QKV_DIM;
 
-    float sum = 0.0f;
+    int k_addr_1 = (has_1) ? (k_chunk_base + (j_start + 1) * QKV_DIM) : k_addr_0;
+    int k_addr_2 = (has_2) ? (k_chunk_base + (j_start + 2) * QKV_DIM) : k_addr_0;
+    int k_addr_3 = (has_3) ? (k_chunk_base + (j_start + 3) * QKV_DIM) : k_addr_0;;
 
-    #pragma unroll
+    float sum0 = 0.0f;
+    float sum1 = 0.0f;
+    float sum2 = 0.0f;
+    float sum3 = 0.0f;
+
     for (int d = 0; d < HEAD_DIM; d += 4) {
-        float4 q_vec = vload4(0, &QKV[q_start + d]);
-        float4 k_vec = vload4(0, &QKV[k_start + d]);
-        
-        sum += dot(q_vec, k_vec);
+        float4 q_vec = vload4(0, &QKV[q_offset_base + d]);
+
+        sum0 += dot(q_vec, vload4(0, &QKV[k_addr_0 + d]));
+
+        if (has_1) sum1 += dot(q_vec, vload4(0, &QKV[k_addr_1 + d]));
+        if (has_2) sum2 += dot(q_vec, vload4(0, &QKV[k_addr_2 + d]));
+        if (has_3) sum3 += dot(q_vec, vload4(0, &QKV[k_addr_3 + d]));
     }
 
-    int out_idx = (batch_idx * NUM_HEADS + head_idx) * (TOKENS * TOKENS) + (i * TOKENS + j);
-    
-    float scale = 1.0f / sqrt((float)HEAD_DIM);
-    scores[out_idx] = sum * scale;
+    float scale = 0.125f;
+    int out_base = (batch_idx * NUM_HEADS + head_idx) * (TOKENS * TOKENS) + (i * TOKENS + j_start);
+
+    scores[out_base + 0] = sum0 * scale;
+    if (has_1) scores[out_base + 1] = sum1 * scale;
+    if (has_2) scores[out_base + 2] = sum2 * scale;
+    if (has_3) scores[out_base + 3] = sum3 * scale;
 }
 
-__kernel void softmax (
+__kernel void softmax(
     __global float* scores,
-    const int size ) {
+    const int size) {
 
     int row = get_global_id(0);
     int offset = row * size;
@@ -331,35 +330,36 @@ __kernel void softmax (
 __kernel void attn_context(
     __global const float* scores,
     __global const float* QKV,
-    __global float* attn_out)  {
+    __global float* attn_out) {
 
     int i = get_global_id(0);
     int d = get_global_id(1);
     int z = get_global_id(2);
 
+    int d_start = d * 4;
     int batch_idx = z / NUM_HEADS;
-    int head_idx  = z % NUM_HEADS;
-    
+    int head_idx = z % NUM_HEADS;
+
     if (i >= TOKENS || d >= HEAD_DIM || batch_idx >= BATCH_SIZE) return;
 
     int score_base = (batch_idx * NUM_HEADS + head_idx) * (TOKENS * TOKENS) + i * TOKENS;
-    int v_base_offset = 2 * EMBED_DIM + head_idx * HEAD_DIM + d; // V는 2번째
+    int v_base_offset = 2 * EMBED_DIM + head_idx * HEAD_DIM + d_start;
+    int qkv_batch_base = batch_idx * TOKENS * QKV_DIM;
 
-    float sum = 0.0f;
+    float4 sum = (float4)(0.0f);
 
     for (int j = 0; j < TOKENS; ++j) {
         float s = scores[score_base + j];
-        
-        int v_idx = (batch_idx * TOKENS + j) * QKV_DIM + v_base_offset;
-        float v = QKV[v_idx];
-        
+
+        int v_idx = qkv_batch_base + j * QKV_DIM + v_base_offset;
+        float4 v = vload4(0, &QKV[v_idx]);
+
         sum += s * v;
     }
 
-    int out_idx = (batch_idx * TOKENS + i) * EMBED_DIM + (head_idx * HEAD_DIM + d);
-    attn_out[out_idx] = sum;
+    int out_idx = (batch_idx * TOKENS + i) * EMBED_DIM + (head_idx * HEAD_DIM + d_start);
+    vstore4(sum, 0, &attn_out[out_idx]);
 }
-
 __kernel void patch_embedding (
     __global const float* input,
     __global float* output,
