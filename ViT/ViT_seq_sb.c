@@ -206,7 +206,7 @@ static void linear_layer(cl_mem input, cl_mem output, int token_size, int in_fea
     err = clSetKernelArg(ctx.k_linear, 5, sizeof(int), &in_features); CHECK_ERROR(err);
     err = clSetKernelArg(ctx.k_linear, 6, sizeof(int), &out_features); CHECK_ERROR(err);
 
-    size_t gws[2] = { out_features / linear_factor, token_size / 4 };
+    size_t gws[2] = { out_features / linear_factor, token_size / linear_factor };
     padding_size(gws, ctx.lws_linear, 2);
 
     err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_linear, 2, NULL, gws, ctx.lws_linear, 0, NULL, ctx.evt_ptr); CHECK_ERROR(err);
