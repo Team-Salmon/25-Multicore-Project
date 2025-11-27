@@ -30,14 +30,14 @@ __kernel void linear(
     int token_group_idx = get_global_id(1);
 
     int out_idx_base = out_group_idx * 8;
-    int token_idx_base = token_group_idx * 4;
+    int token_idx_base = token_group_idx * 8;
 
     if (out_idx_base >= N || token_idx_base >= M) return;
 
-    float4 acc[4][8];
+    float4 acc[8][8];
 
     #pragma unroll
-    for (int t = 0; t < 4; ++t) {
+    for (int t = 0; t < 8; ++t) {
         #pragma unroll
         for (int c = 0; c < 8; ++c) {
             acc[t][c] = 0.0f;
@@ -55,7 +55,7 @@ __kernel void linear(
         }
 
         #pragma unroll
-        for (int t = 0; t < 4; ++t) {
+        for (int t = 0; t < 8; ++t) {
             int current_token_idx = token_idx_base + t;
             
             if (current_token_idx < M) {
@@ -73,7 +73,7 @@ __kernel void linear(
     float4 b1 = vload4(0, &bias[out_idx_base + 4]);
 
     #pragma unroll
-    for (int t = 0; t < 4; ++t) {
+    for (int t = 0; t < 8; ++t) {
         int current_token_idx = token_idx_base + t;
 
         if (current_token_idx < M) {
