@@ -37,7 +37,7 @@
 
 #define enc_size tokens * embed_dim
 
-#define PROFILE_MODE
+//#define PROFILE_MODE
 
 typedef struct __cl_context {
     cl_platform_id platform;
@@ -226,7 +226,7 @@ static void linear_gelu_layer(cl_mem input, cl_mem output, int token_size, int i
     err = clSetKernelArg(ctx.k_linear_gelu, 5, sizeof(int), &in_features); CHECK_ERROR(err);
     err = clSetKernelArg(ctx.k_linear_gelu, 6, sizeof(int), &out_features); CHECK_ERROR(err);
 
-    size_t gws[2] = { out_features / linear_factor, token_size / 2 };
+    size_t gws[2] = { out_features / linear_factor, token_size / 4 };
 
     padding_size(gws, ctx.lws_linear, 2);
 

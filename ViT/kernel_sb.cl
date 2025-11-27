@@ -92,7 +92,6 @@ __kernel void linear(
         }
     }
 }
-
 __kernel void linear_gelu(
     __global const float* input,
     __global float* output,
@@ -100,119 +99,75 @@ __kernel void linear_gelu(
     __global const float* bias,
     const int M,
     const int K,
-    const int N ) {
+    const int N) {
 
-    // Global ID 0: Output Channel Group (8 channels)
     int out_group_idx = get_global_id(0);
-    // Global ID 1: Token Pair Group (2 tokens)
-    int token_pair_idx = get_global_id(1);
+    int token_group_idx = get_global_id(1);
 
     int out_idx_base = out_group_idx * 8;
-    int token_idx_0  = token_pair_idx * 2;
-    int token_idx_1  = token_idx_0 + 1;
+    int token_idx_base = token_group_idx * 4;
 
-    // 범위 체크
-    if (out_idx_base >= N || token_idx_0 >= M) return;
+    if (out_idx_base >= N || token_idx_base >= M) return;
 
-    bool has_second_token = (token_idx_1 < M);
+    float4 acc[4][8];
 
-    // --- Accumulators (Token 0) ---
-    float4 acc0_t0 = 0.0f; float4 acc1_t0 = 0.0f; float4 acc2_t0 = 0.0f; float4 acc3_t0 = 0.0f;
-    float4 acc4_t0 = 0.0f; float4 acc5_t0 = 0.0f; float4 acc6_t0 = 0.0f; float4 acc7_t0 = 0.0f;
-
-    // --- Accumulators (Token 1) ---
-    float4 acc0_t1 = 0.0f; float4 acc1_t1 = 0.0f; float4 acc2_t1 = 0.0f; float4 acc3_t1 = 0.0f;
-    float4 acc4_t1 = 0.0f; float4 acc5_t1 = 0.0f; float4 acc6_t1 = 0.0f; float4 acc7_t1 = 0.0f;
-
-    int in_offset_0 = token_idx_0 * K;
-    int in_offset_1 = token_idx_1 * K;
-    int wt_base     = out_idx_base * K;
-
-    // --- Main Loop (Weight Reuse) ---
-    for (int k = 0; k < K; k += 4) {
-        // 1. Weight Load (한 번 읽어서 두 토큰에 공유!)
-        float4 w0 = vload4(0, &weights[wt_base + 0*K + k]);
-        float4 w1 = vload4(0, &weights[wt_base + 1*K + k]);
-        float4 w2 = vload4(0, &weights[wt_base + 2*K + k]);
-        float4 w3 = vload4(0, &weights[wt_base + 3*K + k]);
-        float4 w4 = vload4(0, &weights[wt_base + 4*K + k]);
-        float4 w5 = vload4(0, &weights[wt_base + 5*K + k]);
-        float4 w6 = vload4(0, &weights[wt_base + 6*K + k]);
-        float4 w7 = vload4(0, &weights[wt_base + 7*K + k]);
-
-        // 2. Token 0 Compute
-        float4 in_val0 = vload4(0, &input[in_offset_0 + k]);
-        
-        acc0_t0 = fma(in_val0, w0, acc0_t0);
-        acc1_t0 = fma(in_val0, w1, acc1_t0);
-        acc2_t0 = fma(in_val0, w2, acc2_t0);
-        acc3_t0 = fma(in_val0, w3, acc3_t0);
-        acc4_t0 = fma(in_val0, w4, acc4_t0);
-        acc5_t0 = fma(in_val0, w5, acc5_t0);
-        acc6_t0 = fma(in_val0, w6, acc6_t0);
-        acc7_t0 = fma(in_val0, w7, acc7_t0);
-
-        // 3. Token 1 Compute (Only if valid)
-        if (has_second_token) {
-            float4 in_val1 = vload4(0, &input[in_offset_1 + k]);
-            
-            acc0_t1 = fma(in_val1, w0, acc0_t1);
-            acc1_t1 = fma(in_val1, w1, acc1_t1);
-            acc2_t1 = fma(in_val1, w2, acc2_t1);
-            acc3_t1 = fma(in_val1, w3, acc3_t1);
-            acc4_t1 = fma(in_val1, w4, acc4_t1);
-            acc5_t1 = fma(in_val1, w5, acc5_t1);
-            acc6_t1 = fma(in_val1, w6, acc6_t1);
-            acc7_t1 = fma(in_val1, w7, acc7_t1);
+#pragma unroll
+    for (int t = 0; t < 4; ++t) {
+#pragma unroll
+        for (int c = 0; c < 8; ++c) {
+            acc[t][c] = 0.0f;
         }
     }
 
-    // --- Bias Load (Shared) ---
+    int wt_base = out_idx_base * K;
+
+    for (int k = 0; k < K; k += 4) {
+        float4 w[8];
+
+#pragma unroll
+        for (int c = 0; c < 8; ++c) {
+            w[c] = vload4(0, &weights[wt_base + c * K + k]);
+        }
+
+#pragma unroll
+        for (int t = 0; t < 4; ++t) {
+            int current_token_idx = token_idx_base + t;
+
+            if (current_token_idx < M) {
+                float4 in_val = vload4(0, &input[current_token_idx * K + k]);
+
+#pragma unroll
+                for (int c = 0; c < 8; ++c) {
+                    acc[t][c] = fma(in_val, w[c], acc[t][c]);
+                }
+            }
+        }
+    }
+
     float4 b0 = vload4(0, &bias[out_idx_base + 0]);
     float4 b1 = vload4(0, &bias[out_idx_base + 4]);
 
-    // --- Final Reduction & GELU & Store (Token 0) ---
-    {
-        float sum0 = acc0_t0.x + acc0_t0.y + acc0_t0.z + acc0_t0.w;
-        float sum1 = acc1_t0.x + acc1_t0.y + acc1_t0.z + acc1_t0.w;
-        float sum2 = acc2_t0.x + acc2_t0.y + acc2_t0.z + acc2_t0.w;
-        float sum3 = acc3_t0.x + acc3_t0.y + acc3_t0.z + acc3_t0.w;
-        float sum4 = acc4_t0.x + acc4_t0.y + acc4_t0.z + acc4_t0.w;
-        float sum5 = acc5_t0.x + acc5_t0.y + acc5_t0.z + acc5_t0.w;
-        float sum6 = acc6_t0.x + acc6_t0.y + acc6_t0.z + acc6_t0.w;
-        float sum7 = acc7_t0.x + acc7_t0.y + acc7_t0.z + acc7_t0.w;
+#pragma unroll
+    for (int t = 0; t < 4; ++t) {
+        int current_token_idx = token_idx_base + t;
 
-        float4 temp0 = (float4)(sum0, sum1, sum2, sum3) + b0;
-        float4 temp1 = (float4)(sum4, sum5, sum6, sum7) + b1;
+        if (current_token_idx < M) {
+            float sum[8];
+#pragma unroll
+            for (int c = 0; c < 8; ++c) {
+                sum[c] = acc[t][c].x + acc[t][c].y + acc[t][c].z + acc[t][c].w;
+            }
 
-        float4 res0 = (float4)(gelu(temp0.x), gelu(temp0.y), gelu(temp0.z), gelu(temp0.w));
-        float4 res1 = (float4)(gelu(temp1.x), gelu(temp1.y), gelu(temp1.z), gelu(temp1.w));
+            float4 temp0 = (float4)(sum[0], sum[1], sum[2], sum[3]) + b0;
+            float4 temp1 = (float4)(sum[4], sum[5], sum[6], sum[7]) + b1;
 
-        __global float* out_ptr = &output[token_idx_0 * N + out_idx_base];
-        vstore4(res0, 0, out_ptr + 0);
-        vstore4(res1, 0, out_ptr + 4);
-    }
+            float4 res0 = (float4)(gelu(temp0.x), gelu(temp0.y), gelu(temp0.z), gelu(temp0.w));
+            float4 res1 = (float4)(gelu(temp1.x), gelu(temp1.y), gelu(temp1.z), gelu(temp1.w));
 
-    // --- Final Reduction & GELU & Store (Token 1) ---
-    if (has_second_token) {
-        float sum0 = acc0_t1.x + acc0_t1.y + acc0_t1.z + acc0_t1.w;
-        float sum1 = acc1_t1.x + acc1_t1.y + acc1_t1.z + acc1_t1.w;
-        float sum2 = acc2_t1.x + acc2_t1.y + acc2_t1.z + acc2_t1.w;
-        float sum3 = acc3_t1.x + acc3_t1.y + acc3_t1.z + acc3_t1.w;
-        float sum4 = acc4_t1.x + acc4_t1.y + acc4_t1.z + acc4_t1.w;
-        float sum5 = acc5_t1.x + acc5_t1.y + acc5_t1.z + acc5_t1.w;
-        float sum6 = acc6_t1.x + acc6_t1.y + acc6_t1.z + acc6_t1.w;
-        float sum7 = acc7_t1.x + acc7_t1.y + acc7_t1.z + acc7_t1.w;
-
-        float4 temp0 = (float4)(sum0, sum1, sum2, sum3) + b0;
-        float4 temp1 = (float4)(sum4, sum5, sum6, sum7) + b1;
-
-        float4 res0 = (float4)(gelu(temp0.x), gelu(temp0.y), gelu(temp0.z), gelu(temp0.w));
-        float4 res1 = (float4)(gelu(temp1.x), gelu(temp1.y), gelu(temp1.z), gelu(temp1.w));
-
-        __global float* out_ptr = &output[token_idx_1 * N + out_idx_base];
-        vstore4(res0, 0, out_ptr + 0);
-        vstore4(res1, 0, out_ptr + 4);
+            __global float* out_ptr = &output[current_token_idx * N + out_idx_base];
+            vstore4(res0, 0, out_ptr + 0);
+            vstore4(res1, 0, out_ptr + 4);
+        }
     }
 }
 
