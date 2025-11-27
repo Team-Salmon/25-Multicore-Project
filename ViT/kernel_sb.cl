@@ -26,104 +26,70 @@ __kernel void linear(
     const int K,
     const int N ) {
 
-    // Global ID 0: Output Channel Group (8 channels per thread)
     int out_group_idx = get_global_id(0);
-    // Global ID 1: Token Pair Group (2 tokens per thread)
-    int token_pair_idx = get_global_id(1);
+    int token_group_idx = get_global_id(1);
 
     int out_idx_base = out_group_idx * 8;
-    int token_idx_0  = token_pair_idx * 2;
-    int token_idx_1  = token_idx_0 + 1;
+    int token_idx_base = token_group_idx * 4;
 
-    // 범위 체크: 첫 번째 토큰이나 출력 인덱스가 범위를 벗어나면 종료
-    if (out_idx_base >= N || token_idx_0 >= M) return;
+    if (out_idx_base >= N || token_idx_base >= M) return;
 
-    // 두 번째 토큰이 존재하는지 확인 (M이 홀수일 경우 대비)
-    bool has_second_token = (token_idx_1 < M);
+    float4 acc[4][8];
 
-    // --- Accumulators (레지스터 공간 확보) ---
-    // Token 0에 대한 결과 누적 (8개 채널)
-    float4 acc0_t0 = 0.0f; float4 acc1_t0 = 0.0f; float4 acc2_t0 = 0.0f; float4 acc3_t0 = 0.0f;
-    float4 acc4_t0 = 0.0f; float4 acc5_t0 = 0.0f; float4 acc6_t0 = 0.0f; float4 acc7_t0 = 0.0f;
-
-    // Token 1에 대한 결과 누적 (8개 채널)
-    float4 acc0_t1 = 0.0f; float4 acc1_t1 = 0.0f; float4 acc2_t1 = 0.0f; float4 acc3_t1 = 0.0f;
-    float4 acc4_t1 = 0.0f; float4 acc5_t1 = 0.0f; float4 acc6_t1 = 0.0f; float4 acc7_t1 = 0.0f;
-
-    int in_offset_0 = token_idx_0 * K;
-    int in_offset_1 = token_idx_1 * K; // boundary safe calculation not needed here, handled in load
-    int wt_base     = out_idx_base * K;
-
-    // --- Main Loop ---
-    // 레지스터 압박을 줄이기 위해 k+=4 (float4 1개씩) 처리
-    for (int k = 0; k < K; k += 4) {
-        
-        // [Critical Optimization] Weight Load: 한 번 읽어서 두 토큰에 공유!
-        float4 w0 = vload4(0, &weights[wt_base + 0*K + k]);
-        float4 w1 = vload4(0, &weights[wt_base + 1*K + k]);
-        float4 w2 = vload4(0, &weights[wt_base + 2*K + k]);
-        float4 w3 = vload4(0, &weights[wt_base + 3*K + k]);
-        float4 w4 = vload4(0, &weights[wt_base + 4*K + k]);
-        float4 w5 = vload4(0, &weights[wt_base + 5*K + k]);
-        float4 w6 = vload4(0, &weights[wt_base + 6*K + k]);
-        float4 w7 = vload4(0, &weights[wt_base + 7*K + k]);
-
-        // 1. Process Token 0
-        float4 in_val0 = vload4(0, &input[in_offset_0 + k]);
-        
-        acc0_t0 = fma(in_val0, w0, acc0_t0);
-        acc1_t0 = fma(in_val0, w1, acc1_t0);
-        acc2_t0 = fma(in_val0, w2, acc2_t0);
-        acc3_t0 = fma(in_val0, w3, acc3_t0);
-        acc4_t0 = fma(in_val0, w4, acc4_t0);
-        acc5_t0 = fma(in_val0, w5, acc5_t0);
-        acc6_t0 = fma(in_val0, w6, acc6_t0);
-        acc7_t0 = fma(in_val0, w7, acc7_t0);
-
-        // 2. Process Token 1 (If exists) - Weight 재사용!
-        if (has_second_token) {
-            float4 in_val1 = vload4(0, &input[in_offset_1 + k]);
-
-            acc0_t1 = fma(in_val1, w0, acc0_t1);
-            acc1_t1 = fma(in_val1, w1, acc1_t1);
-            acc2_t1 = fma(in_val1, w2, acc2_t1);
-            acc3_t1 = fma(in_val1, w3, acc3_t1);
-            acc4_t1 = fma(in_val1, w4, acc4_t1);
-            acc5_t1 = fma(in_val1, w5, acc5_t1);
-            acc6_t1 = fma(in_val1, w6, acc6_t1);
-            acc7_t1 = fma(in_val1, w7, acc7_t1);
+    #pragma unroll
+    for (int t = 0; t < 4; ++t) {
+        #pragma unroll
+        for (int c = 0; c < 8; ++c) {
+            acc[t][c] = 0.0f;
         }
     }
 
-    // --- Helper Macro for Reduction ---
-    #define REDUCE_AND_STORE(acc0, acc1, acc2, acc3, acc4, acc5, acc6, acc7, t_idx) \
-    { \
-        float sum0 = acc0.x + acc0.y + acc0.z + acc0.w; \
-        float sum1 = acc1.x + acc1.y + acc1.z + acc1.w; \
-        float sum2 = acc2.x + acc2.y + acc2.z + acc2.w; \
-        float sum3 = acc3.x + acc3.y + acc3.z + acc3.w; \
-        float sum4 = acc4.x + acc4.y + acc4.z + acc4.w; \
-        float sum5 = acc5.x + acc5.y + acc5.z + acc5.w; \
-        float sum6 = acc6.x + acc6.y + acc6.z + acc6.w; \
-        float sum7 = acc7.x + acc7.y + acc7.z + acc7.w; \
-        \
-        float4 b0 = vload4(0, &bias[out_idx_base + 0]); \
-        float4 b1 = vload4(0, &bias[out_idx_base + 4]); \
-        \
-        float4 res0 = (float4)(sum0, sum1, sum2, sum3) + b0; \
-        float4 res1 = (float4)(sum4, sum5, sum6, sum7) + b1; \
-        \
-        __global float* out_ptr = &output[t_idx * N + out_idx_base]; \
-        vstore4(res0, 0, out_ptr + 0); \
-        vstore4(res1, 0, out_ptr + 4); \
+    int wt_base = out_idx_base * K;
+
+    for (int k = 0; k < K; k += 4) {
+        float4 w[8];
+        
+        #pragma unroll
+        for (int c = 0; c < 8; ++c) {
+            w[c] = vload4(0, &weights[wt_base + c*K + k]);
+        }
+
+        #pragma unroll
+        for (int t = 0; t < 4; ++t) {
+            int current_token_idx = token_idx_base + t;
+            
+            if (current_token_idx < M) {
+                float4 in_val = vload4(0, &input[current_token_idx * K + k]);
+                
+                #pragma unroll
+                for (int c = 0; c < 8; ++c) {
+                    acc[t][c] = fma(in_val, w[c], acc[t][c]);
+                }
+            }
+        }
     }
 
-    // Store Token 0 Result
-    REDUCE_AND_STORE(acc0_t0, acc1_t0, acc2_t0, acc3_t0, acc4_t0, acc5_t0, acc6_t0, acc7_t0, token_idx_0);
+    float4 b0 = vload4(0, &bias[out_idx_base + 0]);
+    float4 b1 = vload4(0, &bias[out_idx_base + 4]);
 
-    // Store Token 1 Result
-    if (has_second_token) {
-        REDUCE_AND_STORE(acc0_t1, acc1_t1, acc2_t1, acc3_t1, acc4_t1, acc5_t1, acc6_t1, acc7_t1, token_idx_1);
+    #pragma unroll
+    for (int t = 0; t < 4; ++t) {
+        int current_token_idx = token_idx_base + t;
+
+        if (current_token_idx < M) {
+            float sum[8];
+            #pragma unroll
+            for (int c = 0; c < 8; ++c) {
+                sum[c] = acc[t][c].x + acc[t][c].y + acc[t][c].z + acc[t][c].w;
+            }
+
+            float4 res0 = (float4)(sum[0], sum[1], sum[2], sum[3]) + b0;
+            float4 res1 = (float4)(sum[4], sum[5], sum[6], sum[7]) + b1;
+
+            __global float* out_ptr = &output[current_token_idx * N + out_idx_base];
+            vstore4(res0, 0, out_ptr + 0);
+            vstore4(res1, 0, out_ptr + 4);
+        }
     }
 }
 
