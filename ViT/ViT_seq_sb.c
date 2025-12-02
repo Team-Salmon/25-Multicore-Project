@@ -347,8 +347,8 @@ static void init_kernel(Network* networks) {
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
     // Create Kernels
 
-    ctx.k_patch_embed = clCreateKernel(ctx.program, "patch_embedding_linear", &err); CHECK_ERROR(err);
-    ctx.k_linear = clCreateKernel(ctx.program, "linear", &err); CHECK_ERROR(err);
+    ctx.k_patch_embed = clCreateKernel(ctx.program, "linear_conv2d", &err); CHECK_ERROR(err);
+    ctx.k_linear = clCreateKernel(ctx.program, "linear_default", &err); CHECK_ERROR(err);
     ctx.k_linear_gelu = clCreateKernel(ctx.program, "linear_gelu", &err); CHECK_ERROR(err);
 
     ctx.k_attn_score = clCreateKernel(ctx.program, "attn_score", &err); CHECK_ERROR(err);
