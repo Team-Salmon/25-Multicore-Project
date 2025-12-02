@@ -444,6 +444,7 @@ void ViT_seq_sb(ImageData* image, Network* networks, float** probabilities) {
         clReleaseEvent(evt_input);
         evt_input = NULL;
 
+        // patch_embbeding
 		linear_layer(ctx.k_patch_embed, ctx.d_img, ctx.d_patch, batch_size * num_patches, in_chans * patch_size * patch_size, embed_dim, ctx.d_networks[1], ctx.d_networks[2]);
 
         pos_embedding(ctx.d_patch, ctx.d_networks[0], ctx.d_networks[3], ctx.d_input_embed);
