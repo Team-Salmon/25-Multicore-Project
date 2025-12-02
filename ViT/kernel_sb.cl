@@ -19,44 +19,47 @@ inline float4 gelu4(float4 x) {
     return 0.5f * x * (1.0f + erf);
 }
 
-inline int get_patch_index(int g_patch_idx, int k) {
-    int batch_idx = g_patch_idx / (OUTPUT_SIZE * OUTPUT_SIZE);
-    int idx_in_batch = g_patch_idx % (OUTPUT_SIZE * OUTPUT_SIZE);
-    
-    int patch_y = idx_in_batch / OUTPUT_SIZE;
-    int patch_x = idx_in_batch % OUTPUT_SIZE;
-
-    int ch = k / (PATCH_SIZE * PATCH_SIZE);
-    int rem_k = k & ((PATCH_SIZE * PATCH_SIZE) - 1); 
-    
-    int py = rem_k >> 4;
-    int px = rem_k & (PATCH_SIZE - 1);
-
-    int gy = (patch_y << 4) + py;
-    int gx = (patch_x << 4) + px;
-    
-    return (batch_idx * 3 + ch) * (IMG_SIZE * IMG_SIZE) + gy * IMG_SIZE + gx;
-}
-
 inline void linear_layer(
     __global const float* input,
     __global float* output,
     __global const float* weights,
     __global const float* bias,
     const int M, const int K, const int N,
-    __local float* tile_input_ptr,
-    __local float* tile_weights_ptr,
-    const int PATCH,
-    const int GELU ) {
+    __local float* tile_input_ptr,   
+    __local float* tile_weights_ptr, 
+    const int IS_PATCH,
+    const int USE_GELU ) {
 
     int l_out_idx = get_local_id(0);
     int l_token_idx = get_local_id(1);
-    int l_flat_idx = l_token_idx * LI_LWS_OUT + l_out_idx;
-
+    
     int g_out_base = (get_group_id(0) * LI_LWS_OUT + l_out_idx) * LI_OPT;
     int g_token_base = (get_group_id(1) * LI_LWS_TOKEN + l_token_idx) * LI_TPT;
 
     float acc[LI_TPT][LI_OPT];
+    int patch_base_addr[LI_TPT]; 
+
+    if (IS_PATCH) {
+        #pragma unroll
+        for (int t = 0; t < LI_TPT; ++t) {
+            int g_patch_idx = g_token_base + t;
+            if (g_patch_idx < M) {
+                int batch_idx = g_patch_idx / (OUTPUT_SIZE * OUTPUT_SIZE);
+                int idx_in_batch = g_patch_idx % (OUTPUT_SIZE * OUTPUT_SIZE);
+                
+                int patch_y = idx_in_batch / OUTPUT_SIZE;
+                int patch_x = idx_in_batch % OUTPUT_SIZE;
+
+                int global_y_base = (patch_y << 4); // patch_y * 16
+                int global_x_base = (patch_x << 4); // patch_x * 16
+                
+                patch_base_addr[t] = (batch_idx * 3) * (IMG_SIZE * IMG_SIZE) 
+                                     + global_y_base * IMG_SIZE + global_x_base;
+            } else {
+                patch_base_addr[t] = 0;
+            }
+        }
+    }
 
     #pragma unroll
     for (int t = 0; t < LI_TPT; ++t) {
@@ -65,21 +68,34 @@ inline void linear_layer(
     }
 
     for (int k_curr = 0; k_curr < K; k_curr += LI_TILE) {
+        
         #pragma unroll
         for (int t = 0; t < LI_TPT; ++t) {
-            int l_row = l_token_idx * LI_TPT + t;
-            int g_row = g_token_base + t;
-            int k_offset = l_out_idx * 4;
-            int current_k = k_curr + k_offset;
+            int l_row = l_token_idx * LI_TPT + t; 
+            int g_row = g_token_base + t;         
+            int k_offset = l_out_idx * 4;         
+            int current_k = k_curr + k_offset;    
 
             int l_idx = l_row * LI_STRIDE_IN + k_offset; 
 
             if (g_row < M && current_k < K) {
                 int addr;
+                if (IS_PATCH) {
+                    // [최적화된 주소 계산]
+                    // 미리 구해둔 patch_base_addr[t]에 픽셀 오프셋만 더함
+                    
+                    int ch = current_k / (PATCH_SIZE * PATCH_SIZE);         // Channel (0~2)
+                    int rem_k = current_k & ((PATCH_SIZE * PATCH_SIZE) - 1); // Pixel Index in Patch (0~255)
+                    
+                    int py = rem_k >> 4;               // Row inside patch (0~15)
+                    int px = rem_k & (PATCH_SIZE - 1); // Col inside patch (0~15)
 
-                if (PATCH) {
-                    addr = get_patch_index(g_row, current_k);
+                    // 최종 주소 = Base + (Ch Offset) + (Pixel Offset)
+                    addr = patch_base_addr[t] 
+                           + ch * (IMG_SIZE * IMG_SIZE) 
+                           + py * IMG_SIZE + px;
                 } else {
+                    // 일반 Linear
                     addr = g_row * K + current_k;
                 }
                 
@@ -102,9 +118,11 @@ inline void linear_layer(
 
         #pragma unroll
         for (int i = 0; i < 2; ++i) {
+            int l_flat_idx = l_token_idx * LI_LWS_OUT + l_out_idx;
             int load_idx = l_flat_idx * 2 + i;
-            int w_row_k = load_idx / tile_width_n;
-            int w_col_n = load_idx % tile_width_n;
+            
+            int w_row_k = load_idx / tile_width_n; 
+            int w_col_n = load_idx % tile_width_n; 
             
             int l_idx = w_row_k * LI_STRIDE_WEIGHT + w_col_n;
 
@@ -117,6 +135,7 @@ inline void linear_layer(
 
         barrier(CLK_LOCAL_MEM_FENCE);
 
+        // 3. Compute (Local -> Register)
         for (int k = 0; k < LI_TILE; ++k) {
             float w_cache[LI_OPT];
             int l_col_base = l_out_idx * LI_OPT;
@@ -148,11 +167,12 @@ inline void linear_layer(
     #pragma unroll
     for (int t = 0; t < LI_TPT; ++t) {
         int curr_g_token = g_token_base + t;
+
         if (curr_g_token < M) {
             float4 res0 = (float4)(acc[t][0], acc[t][1], acc[t][2], acc[t][3]) + b0;
             float4 res1 = (float4)(acc[t][4], acc[t][5], acc[t][6], acc[t][7]) + b1;
 
-            if (GELU) {
+            if (USE_GELU) {
                 res0 = gelu4(res0);
                 res1 = gelu4(res1);
             }
@@ -169,9 +189,9 @@ __kernel void linear_default (
     __global float* output, 
     __global const float* weights, 
     __global const float* bias,
-    const int M, 
-    const int K, 
-    const int N) {
+    const int M,
+    const int K,
+    const int N ) {
 
     __local float l_in[LI_LWS_TOKEN * LI_TPT * LI_STRIDE_IN];
     __local float l_w[LI_TILE * LI_STRIDE_WEIGHT];
@@ -182,11 +202,11 @@ __kernel void linear_default (
 __kernel void linear_gelu (
     __global const float* input,
     __global float* output, 
-    __global const float* weights, 
+    __global const float* weights,
     __global const float* bias,
     const int M,
     const int K, 
-    const int N) {
+    const int N ) {
 
     __local float l_in[LI_LWS_TOKEN * LI_TPT * LI_STRIDE_IN];
     __local float l_w[LI_TILE * LI_STRIDE_WEIGHT];
@@ -195,11 +215,11 @@ __kernel void linear_gelu (
 }
 
 __kernel void linear_conv2d (
-    __global const float* input, 
+    __global const float* input,
     __global float* output, 
-    __global const float* weights, 
+    __global const float* weights,
     __global const float* bias,
-    const int M, 
+    const int M,
     const int K, 
     const int N) {
 
