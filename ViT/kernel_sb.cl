@@ -67,14 +67,13 @@ __kernel void linear_default(
         }
 
         int g_out_group_start = get_group_id(0) * LI_LWS_OUT * LI_OPT;
-        int tile_width_n = LI_LWS_OUT * LI_OPT;
 
         #pragma unroll
         for (int i = 0; i < 2; ++i) {
             int l_flat = l_token_idx * LI_LWS_OUT + l_out_idx;
             int load_idx = l_flat * 2 + i;
-            int w_r = load_idx / tile_width_n;
-            int w_c = load_idx % tile_width_n;
+            int w_r = load_idx & (LI_TILE - 1);
+            int w_c = load_idx >> 4;
 
             if ((k_curr + w_r) < K && (g_out_group_start + w_c) < N) {
                 tile_weights[w_r][w_c] = weights[(g_out_group_start + w_c) * K + (k_curr + w_r)];
@@ -170,14 +169,13 @@ __kernel void linear_gelu(
         }
 
         int g_out_group_start = get_group_id(0) * LI_LWS_OUT * LI_OPT;
-        int tile_width_n = LI_LWS_OUT * LI_OPT;
 
         #pragma unroll
         for (int i = 0; i < 2; ++i) {
             int l_flat = l_token_idx * LI_LWS_OUT + l_out_idx;
             int load_idx = l_flat * 2 + i;
-            int w_r = load_idx / tile_width_n;
-            int w_c = load_idx % tile_width_n;
+            int w_r = load_idx & (LI_TILE - 1);
+            int w_c = load_idx >> 4;
 
             if ((k_curr + w_r) < K && (g_out_group_start + w_c) < N) {
                 tile_weights[w_r][w_c] = weights[(g_out_group_start + w_c) * K + (k_curr + w_r)];
@@ -308,14 +306,13 @@ __kernel void linear_conv2d(
         }
 
         int g_out_group_start = get_group_id(0) * LI_LWS_OUT * LI_OPT;
-        int tile_width_n = LI_LWS_OUT * LI_OPT;
 
         #pragma unroll
         for (int i = 0; i < 2; ++i) {
             int l_flat = l_token_idx * LI_LWS_OUT + l_out_idx;
             int load_idx = l_flat * 2 + i;
-            int w_r = load_idx / tile_width_n;
-            int w_c = load_idx % tile_width_n;
+            int w_r = load_idx & (LI_TILE - 1);
+            int w_c = load_idx >> 4;
 
             if ((k_curr + w_r) < K && (g_out_group_start + w_c) < N) {
                 tile_weights[w_r][w_c] = weights[(g_out_group_start + w_c) * K + (k_curr + w_r)];

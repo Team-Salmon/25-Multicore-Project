@@ -23,8 +23,6 @@
 
 // custom defines
 #define batch_size 8
-#define linear_factor 8
-#define linear_factor2 4
 
 #define li_lws_out 4
 #define li_lws_token 64
