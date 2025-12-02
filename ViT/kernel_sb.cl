@@ -1,8 +1,13 @@
 #define LOCAL_DIM_OUT 4
 #define LOCAL_DIM_TOKEN 64
+
 #define TOKENS_PER_THREAD 4
 #define OUTPUTS_PER_THREAD 8
+
 #define TILE_K 16
+
+#define INPUT_STRIDE 17
+#define WEIGHT_STRIDE 33
 
 inline float4 gelu4(float4 x) {
     const float INV_SQRT_2 = 0.70710678f;
@@ -34,8 +39,8 @@ __kernel void linear(
     const int K,
     const int N) {
 
-    __local float tile_input[LOCAL_DIM_TOKEN * TOKENS_PER_THREAD][TILE_K];
-    __local float tile_weights[TILE_K][LOCAL_DIM_OUT * OUTPUTS_PER_THREAD];
+    __local float tile_input[LOCAL_DIM_TOKEN * TOKENS_PER_THREAD][INPUT_STRIDE];
+    __local float tile_weights[TILE_K][WEIGHT_STRIDE];
 
     int l_out_idx = get_local_id(0);
     int l_token_idx = get_local_id(1);
@@ -55,6 +60,7 @@ __kernel void linear(
     }
 
     for (int k_curr = 0; k_curr < K; k_curr += TILE_K) {
+        
         #pragma unroll
         for (int t = 0; t < TOKENS_PER_THREAD; ++t) {
             int l_row = l_token_idx * TOKENS_PER_THREAD + t;
@@ -81,6 +87,7 @@ __kernel void linear(
         #pragma unroll
         for (int i = 0; i < 2; ++i) {
             int load_idx = l_flat_idx * 2 + i;
+            
             int w_row_k = load_idx / tile_width_n;
             int w_col_n = load_idx % tile_width_n;
 
@@ -145,8 +152,8 @@ __kernel void linear_gelu(
     const int K,
     const int N) {
 
-    __local float tile_input[LOCAL_DIM_TOKEN * TOKENS_PER_THREAD][TILE_K];
-    __local float tile_weights[TILE_K][LOCAL_DIM_OUT * OUTPUTS_PER_THREAD];
+    __local float tile_input[LOCAL_DIM_TOKEN * TOKENS_PER_THREAD][INPUT_STRIDE];
+    __local float tile_weights[TILE_K][WEIGHT_STRIDE];
 
     int l_out_idx = get_local_id(0);
     int l_token_idx = get_local_id(1);
@@ -166,6 +173,7 @@ __kernel void linear_gelu(
     }
 
     for (int k_curr = 0; k_curr < K; k_curr += TILE_K) {
+        
         #pragma unroll
         for (int t = 0; t < TOKENS_PER_THREAD; ++t) {
             int l_row = l_token_idx * TOKENS_PER_THREAD + t;
@@ -192,6 +200,7 @@ __kernel void linear_gelu(
         #pragma unroll
         for (int i = 0; i < 2; ++i) {
             int load_idx = l_flat_idx * 2 + i;
+            
             int w_row_k = load_idx / tile_width_n;
             int w_col_n = load_idx % tile_width_n;
 
