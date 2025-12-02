@@ -1,6 +1,9 @@
+// =================================================================================================
+// 1. Helper Function & Macros
+// =================================================================================================
+
 inline float4 gelu4(float4 x) {
     const float INV_SQRT_2 = 0.70710678f;
-
     const float p  = 0.3275911f;
     const float a1 = 0.254829592f;
     const float a2 = -0.284496736f;
@@ -10,33 +13,116 @@ inline float4 gelu4(float4 x) {
 
     float4 scaled_x = x * INV_SQRT_2;
     float4 abs_x = fabs(scaled_x);
-    
     float4 sign_val = copysign((float4)(1.0f), scaled_x);
     float4 t = native_recip(1.0f + p * abs_x);
     float4 y = ((((a5 * t + a4) * t) + a3) * t + a2) * t + a1;
     float4 erf = sign_val * (1.0f - y * t * native_exp(-abs_x * abs_x));
-    
     return 0.5f * x * (1.0f + erf);
 }
 
-inline int get_patch_index(int g_patch_idx, int k) {
+// [수정 완료] 패치 인덱스 계산 함수
+inline int get_patch_index(int g_patch_idx, int current_k) {
     int batch_idx = g_patch_idx / (OUTPUT_SIZE * OUTPUT_SIZE);
     int idx_in_batch = g_patch_idx % (OUTPUT_SIZE * OUTPUT_SIZE);
     
     int patch_y = idx_in_batch / OUTPUT_SIZE;
     int patch_x = idx_in_batch % OUTPUT_SIZE;
 
-    int ch = k / (PATCH_SIZE * PATCH_SIZE);
-    int rem_k = k & ((PATCH_SIZE * PATCH_SIZE) - 1); 
+    // [중요] 채널과 픽셀 오프셋 계산
+    int ch = current_k / (PATCH_SIZE * PATCH_SIZE);
     
-    int py = rem_k >> 4;
-    int px = rem_k & (PATCH_SIZE - 1);
+    // [버그 수정] 16이 아니라 256(16*16)으로 나눈 나머지를 구해야 함
+    int rem_k = current_k & ((PATCH_SIZE * PATCH_SIZE) - 1); 
+    
+    int py = rem_k >> 4;               // / 16
+    int px = rem_k & (PATCH_SIZE - 1); // % 16
 
-    int gy = (patch_y << 4) + py;
-    int gx = (patch_x << 4) + px;
+    int global_y = (patch_y << 4) + py;
+    int global_x = (patch_x << 4) + px;
     
-    return (batch_idx * 3 + ch) * (IMG_SIZE * IMG_SIZE) + gy * IMG_SIZE + gx;
+    // NCHW layout assumption
+    return (batch_idx * 3 + ch) * (IMG_SIZE * IMG_SIZE) + global_y * IMG_SIZE + global_x;
 }
+
+// [매크로] Global Memory -> Local Memory 로딩 (더블 버퍼링용)
+// BUF_IDX: 0 또는 1 (버퍼 인덱스)
+// K_START_VAL: 현재 로딩할 K의 시작 위치
+#define LOAD_TILE(BUF_IDX, K_START_VAL) \
+    { \
+        int k_curr_load = K_START_VAL; \
+        /* Input Loading */ \
+        _Pragma("unroll") \
+        for (int t = 0; t < LI_TPT; ++t) { \
+            int l_row = l_token_idx * LI_TPT + t; \
+            int g_row = g_token_base + t; \
+            int k_off = l_out_idx * 4; \
+            int k_target = k_curr_load + k_off; \
+            /* 더블 버퍼링 오프셋 적용 */ \
+            int l_idx = (BUF_IDX * INPUT_BUF_SIZE) + (l_row * LI_STRIDE_IN + k_off); \
+            \
+            if (g_row < M && k_target < K) { \
+                int addr; \
+                if (PATCH) addr = get_patch_index(g_row, k_target); \
+                else       addr = g_row * K + k_target; \
+                float4 val = vload4(0, &input[addr]); \
+                tile_input_ptr[l_idx + 0] = val.x; \
+                tile_input_ptr[l_idx + 1] = val.y; \
+                tile_input_ptr[l_idx + 2] = val.z; \
+                tile_input_ptr[l_idx + 3] = val.w; \
+            } else { \
+                tile_input_ptr[l_idx + 0] = 0.0f; \
+                tile_input_ptr[l_idx + 1] = 0.0f; \
+                tile_input_ptr[l_idx + 2] = 0.0f; \
+                tile_input_ptr[l_idx + 3] = 0.0f; \
+            } \
+        } \
+        /* Weights Loading */ \
+        int g_out_start = get_group_id(0) * LI_LWS_OUT * LI_OPT; \
+        int tile_w_n = LI_LWS_OUT * LI_OPT; \
+        _Pragma("unroll") \
+        for (int i = 0; i < 2; ++i) { \
+            int l_flat = l_token_idx * LI_LWS_OUT + l_out_idx; \
+            int ld_idx = l_flat * 2 + i; \
+            int w_r = ld_idx / tile_w_n; \
+            int w_c = ld_idx % tile_w_n; \
+            /* 더블 버퍼링 오프셋 적용 */ \
+            int l_w_idx = (BUF_IDX * WEIGHT_BUF_SIZE) + (w_r * LI_STRIDE_WEIGHT + w_c); \
+            if ((k_curr_load + w_r) < K && (g_out_start + w_c) < N) { \
+                tile_weights_ptr[l_w_idx] = weights[(g_out_start + w_c) * K + (k_curr_load + w_r)]; \
+            } else { \
+                tile_weights_ptr[l_w_idx] = 0.0f; \
+            } \
+        } \
+    }
+
+// [매크로] 연산 수행 (COMPUTE)
+// BUF_IDX: 현재 계산할 데이터가 있는 버퍼 (0 또는 1)
+#define COMPUTE_TILE(BUF_IDX) \
+    { \
+        int in_offset = (BUF_IDX * INPUT_BUF_SIZE); \
+        int w_offset  = (BUF_IDX * WEIGHT_BUF_SIZE); \
+        for (int k = 0; k < LI_TILE; ++k) { \
+            float w_cache[LI_OPT]; \
+            int l_col_base = l_out_idx * LI_OPT; \
+            _Pragma("unroll") \
+            for (int c = 0; c < LI_OPT; ++c) { \
+                w_cache[c] = tile_weights_ptr[w_offset + k * LI_STRIDE_WEIGHT + (l_col_base + c)]; \
+            } \
+            _Pragma("unroll") \
+            for (int t = 0; t < LI_TPT; ++t) { \
+                int l_r = l_token_idx * LI_TPT + t; \
+                float in_val = tile_input_ptr[in_offset + l_r * LI_STRIDE_IN + k]; \
+                _Pragma("unroll") \
+                for (int c = 0; c < LI_OPT; ++c) { \
+                    acc[t][c] = fma(in_val, w_cache[c], acc[t][c]); \
+                } \
+            } \
+        } \
+    }
+
+// =================================================================================================
+// 2. Main Linear Layer Function (Double Buffered)
+// =================================================================================================
 
 inline void linear_layer(
     __global const float* input,
@@ -44,102 +130,61 @@ inline void linear_layer(
     __global const float* weights,
     __global const float* bias,
     const int M, const int K, const int N,
-    __local float* tile_input_ptr,
-    __local float* tile_weights_ptr,
+    __local float* tile_input_ptr,   // 크기: 2 * (LI_LWS_TOKEN * LI_TPT * LI_STRIDE_IN)
+    __local float* tile_weights_ptr, // 크기: 2 * (LI_TILE * LI_STRIDE_WEIGHT)
     const int PATCH,
     const int GELU ) {
 
+    // 상수 정의 (버퍼 크기)
+    const int INPUT_BUF_SIZE  = LI_LWS_TOKEN * LI_TPT * LI_STRIDE_IN;
+    const int WEIGHT_BUF_SIZE = LI_TILE * LI_STRIDE_WEIGHT;
+
     int l_out_idx = get_local_id(0);
     int l_token_idx = get_local_id(1);
-    int l_flat_idx = l_token_idx * LI_LWS_OUT + l_out_idx;
-
     int g_out_base = (get_group_id(0) * LI_LWS_OUT + l_out_idx) * LI_OPT;
     int g_token_base = (get_group_id(1) * LI_LWS_TOKEN + l_token_idx) * LI_TPT;
 
     float acc[LI_TPT][LI_OPT];
 
+    // Init Accumulator
     #pragma unroll
     for (int t = 0; t < LI_TPT; ++t) {
         #pragma unroll
         for (int c = 0; c < LI_OPT; ++c) acc[t][c] = 0.0f;
     }
 
+    // --------------------------------------------------------
+    // Prologue: 첫 번째 타일(Tile 0) 로딩 (Buffer 0)
+    // --------------------------------------------------------
+    LOAD_TILE(0, 0); 
+    barrier(CLK_LOCAL_MEM_FENCE);
+
+    // --------------------------------------------------------
+    // Main Loop: Compute T(k) & Load T(k+1)
+    // --------------------------------------------------------
     for (int k_curr = 0; k_curr < K; k_curr += LI_TILE) {
-        #pragma unroll
-        for (int t = 0; t < LI_TPT; ++t) {
-            int l_row = l_token_idx * LI_TPT + t;
-            int g_row = g_token_base + t;
-            int k_offset = l_out_idx * 4;
-            int current_k = k_curr + k_offset;
+        
+        // 현재 계산할 버퍼 인덱스 (0 -> 1 -> 0 ...)
+        int comp_idx = (k_curr / LI_TILE) % 2;
+        // 다음 데이터를 로딩할 버퍼 인덱스 (1 -> 0 -> 1 ...)
+        int load_idx = 1 - comp_idx;
+        int next_k = k_curr + LI_TILE;
 
-            int l_idx = l_row * LI_STRIDE_IN + k_offset; 
-
-            if (g_row < M && current_k < K) {
-                int addr;
-
-                if (PATCH) {
-                    addr = get_patch_index(g_row, current_k);
-                } else {
-                    addr = g_row * K + current_k;
-                }
-                
-                float4 val = vload4(0, &input[addr]);
-                
-                tile_input_ptr[l_idx + 0] = val.x;
-                tile_input_ptr[l_idx + 1] = val.y;
-                tile_input_ptr[l_idx + 2] = val.z;
-                tile_input_ptr[l_idx + 3] = val.w;
-            } else {
-                tile_input_ptr[l_idx + 0] = 0.0f;
-                tile_input_ptr[l_idx + 1] = 0.0f;
-                tile_input_ptr[l_idx + 2] = 0.0f;
-                tile_input_ptr[l_idx + 3] = 0.0f;
-            }
+        // [비동기 흉내] 다음 타일 로딩 시작 (조건: 다음 타일이 존재할 때만)
+        if (next_k < K) {
+            LOAD_TILE(load_idx, next_k);
         }
 
-        int g_out_group_start = get_group_id(0) * LI_LWS_OUT * LI_OPT;
-        int tile_width_n = LI_LWS_OUT * LI_OPT;
+        // [동시 수행] 현재 타일 계산 (로컬 메모리에서 레지스터로)
+        COMPUTE_TILE(comp_idx);
 
-        #pragma unroll
-        for (int i = 0; i < 2; ++i) {
-            int load_idx = l_flat_idx * 2 + i;
-            int w_row_k = load_idx / tile_width_n;
-            int w_col_n = load_idx % tile_width_n;
-            
-            int l_idx = w_row_k * LI_STRIDE_WEIGHT + w_col_n;
-
-            if ((k_curr + w_row_k) < K && (g_out_group_start + w_col_n) < N) {
-                tile_weights_ptr[l_idx] = weights[(g_out_group_start + w_col_n) * K + (k_curr + w_row_k)];
-            } else {
-                tile_weights_ptr[l_idx] = 0.0f;
-            }
-        }
-
-        barrier(CLK_LOCAL_MEM_FENCE);
-
-        for (int k = 0; k < LI_TILE; ++k) {
-            float w_cache[LI_OPT];
-            int l_col_base = l_out_idx * LI_OPT;
-            
-            #pragma unroll
-            for (int c = 0; c < LI_OPT; ++c) {
-                w_cache[c] = tile_weights_ptr[k * LI_STRIDE_WEIGHT + (l_col_base + c)];
-            }
-
-            #pragma unroll
-            for (int t = 0; t < LI_TPT; ++t) {
-                int l_row = l_token_idx * LI_TPT + t;
-                float in_val = tile_input_ptr[l_row * LI_STRIDE_IN + k];
-
-                #pragma unroll
-                for (int c = 0; c < LI_OPT; ++c) {
-                    acc[t][c] = fma(in_val, w_cache[c], acc[t][c]);
-                }
-            }
-        }
+        // 로딩과 연산이 모두 끝날 때까지 대기
         barrier(CLK_LOCAL_MEM_FENCE);
     }
 
+    // --------------------------------------------------------
+    // Epilogue: Store Result
+    // --------------------------------------------------------
     if (g_out_base >= N || g_token_base >= M) return;
 
     float4 b0 = vload4(0, &bias[g_out_base + 0]);
@@ -164,47 +209,40 @@ inline void linear_layer(
     }
 }
 
-__kernel void linear_default (
-    __global const float* input, 
-    __global float* output, 
-    __global const float* weights, 
-    __global const float* bias,
-    const int M, 
-    const int K, 
-    const int N) {
+// ------------------------------------------------------------------------------------------------
+// 3. Wrapper Kernels (Local Memory 2배 할당 필수!)
+// ------------------------------------------------------------------------------------------------
 
-    __local float l_in[LI_LWS_TOKEN * LI_TPT * LI_STRIDE_IN];
-    __local float l_w[LI_TILE * LI_STRIDE_WEIGHT];
+__kernel void linear_default (
+    __global const float* input, __global float* output, 
+    __global const float* weights, __global const float* bias,
+    const int M, const int K, const int N) {
+
+    // [중요] 버퍼 크기를 2배로 잡습니다. (Double Buffering)
+    __local float l_in[2 * LI_LWS_TOKEN * LI_TPT * LI_STRIDE_IN];
+    __local float l_w[2 * LI_TILE * LI_STRIDE_WEIGHT];
     
     linear_layer(input, output, weights, bias, M, K, N, l_in, l_w, 0, 0);
 }
 
 __kernel void linear_gelu (
-    __global const float* input,
-    __global float* output, 
-    __global const float* weights, 
-    __global const float* bias,
-    const int M,
-    const int K, 
-    const int N) {
+    __global const float* input, __global float* output, 
+    __global const float* weights, __global const float* bias,
+    const int M, const int K, const int N) {
 
-    __local float l_in[LI_LWS_TOKEN * LI_TPT * LI_STRIDE_IN];
-    __local float l_w[LI_TILE * LI_STRIDE_WEIGHT];
+    __local float l_in[2 * LI_LWS_TOKEN * LI_TPT * LI_STRIDE_IN];
+    __local float l_w[2 * LI_TILE * LI_STRIDE_WEIGHT];
     
     linear_layer(input, output, weights, bias, M, K, N, l_in, l_w, 0, 1);
 }
 
 __kernel void linear_conv2d (
-    __global const float* input, 
-    __global float* output, 
-    __global const float* weights, 
-    __global const float* bias,
-    const int M, 
-    const int K, 
-    const int N) {
+    __global const float* input, __global float* output, 
+    __global const float* weights, __global const float* bias,
+    const int M, const int K, const int N) {
 
-    __local float l_in[LI_LWS_TOKEN * LI_TPT * LI_STRIDE_IN];
-    __local float l_w[LI_TILE * LI_STRIDE_WEIGHT];
+    __local float l_in[2 * LI_LWS_TOKEN * LI_TPT * LI_STRIDE_IN];
+    __local float l_w[2 * LI_TILE * LI_STRIDE_WEIGHT];
     
     linear_layer(input, output, weights, bias, M, K, N, l_in, l_w, 1, 0);
 }
