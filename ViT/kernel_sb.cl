@@ -475,3 +475,177 @@ __kernel void extract_cls (
 
     output[dst_idx] = input[src_idx];
 }
+
+#define CH_SIZE 256
+#define SHIFT_PATCH 4    
+#define MASK_PATCH 15
+
+__kernel void patch_embedding_linear(
+    __global const float* input_img,  // [Batch, 3, 224, 224] 원본 이미지
+    __global float* output,           // [Batch, 196, 768] 결과
+    __global const float* weights,    // [768, 768] (Flattened Conv Filter)
+    __global const float* bias,       // [768]
+    const int M,
+    const int K,
+    const int N
+    ) {
+
+    // -----------------------------------------------------------------
+    // 기존 Linear 커널의 로컬 메모리 및 인덱스 설정 (그대로 유지)
+    // -----------------------------------------------------------------
+    __local float tile_input[LI_LWS_TOKEN * LI_TPT][LI_STRIDE_IN];
+    __local float tile_weights[LI_TILE][LI_STRIDE_WEIGHT];
+
+    int l_out_idx = get_local_id(0);
+    int l_token_idx = get_local_id(1);
+    int l_flat_idx = l_token_idx * LI_LWS_OUT + l_out_idx;
+
+    int g_out_base = (get_group_id(0) * LI_LWS_OUT + l_out_idx) * LI_OPT;
+    
+    // 여기서 g_token_base는 "몇 번째 패치인가?"를 의미합니다. (0 ~ Batch*196)
+    int g_token_base = (get_group_id(1) * LI_LWS_TOKEN + l_token_idx) * LI_TPT;
+
+    float acc[LI_TPT][LI_OPT];
+
+    // Accumulator 초기화
+    #pragma unroll
+    for (int t = 0; t < LI_TPT; ++t) {
+        #pragma unroll
+        for (int c = 0; c < LI_OPT; ++c) acc[t][c] = 0.0f;
+    }
+
+    // -----------------------------------------------------------------
+    // Main Loop
+    // -----------------------------------------------------------------
+    for (int k_curr = 0; k_curr < K; k_curr += LI_TILE) {
+        
+        // =============================================================
+        // [핵심 변경] 1. Input 로딩 (im2col 좌표 계산 포함)
+        // =============================================================
+        #pragma unroll
+        for (int t = 0; t < LI_TPT; ++t) {
+            int l_row = l_token_idx * LI_TPT + t;
+            int g_patch_idx = g_token_base + t; // 전체 중 몇 번째 패치인지 (Global Row)
+            int k_offset = l_out_idx * 4;       // 패치 내에서 몇 번째 픽셀부터 읽을지 (Global Col)
+
+            // 현재 읽어야 할 논리적 위치: (g_patch_idx, k_curr + k_offset)
+            int current_k = k_curr + k_offset;
+
+            if (g_patch_idx < M && current_k < K) {
+                // -----------------------------------------------------
+                // 좌표 변환 로직 (Virtual im2col)
+                // Linear의 [Row, Col]을 Image의 [Batch, Ch, Y, X]로 변환
+                // -----------------------------------------------------
+                
+                // 1. Batch와 Patch 좌표 계산
+                int batch_idx = g_patch_idx / (OUTPUT_SIZE * OUTPUT_SIZE); // (196)
+                int idx_in_batch = g_patch_idx % (OUTPUT_SIZE * OUTPUT_SIZE);
+                
+                int patch_y = idx_in_batch / OUTPUT_SIZE; // 0 ~ 13
+                int patch_x = idx_in_batch % OUTPUT_SIZE; // 0 ~ 13
+
+                // 2. 패치 내부 픽셀 좌표 계산 (Channel, Py, Px)
+                // current_k 범위: 0 ~ 767
+                // 0~255: R, 256~511: G, 512~767: B
+                int ch = current_k / CH_SIZE;          // 0, 1, 2
+                int rem_k = current_k & (CH_SIZE - 1); // % 256
+                
+                int py = rem_k >> SHIFT_PATCH;         // / 16
+                int px = rem_k & MASK_PATCH;           // % 16
+
+                // 3. 실제 이미지 메모리 주소 계산
+                // 이미지 레이아웃: NCHW [Batch, 3, 224, 224]
+                int global_y = (patch_y << SHIFT_PATCH) + py; // patch_y * 16 + py
+                int global_x = (patch_x << SHIFT_PATCH) + px; // patch_x * 16 + px
+                
+                // 주소 = (Batch * 3 * H * W) + (Ch * H * W) + (Y * W) + X
+                // stride: 224 * 224 = 50176
+                int img_addr = (batch_idx * 3 + ch) * (IMG_SIZE * IMG_SIZE) 
+                               + global_y * IMG_SIZE + global_x;
+
+                // 4. 데이터 로딩 (float4)
+                // *중요*: X축으로 연속된 4개를 읽음.
+                // 패치 너비가 16이고 4의 배수이므로, 채널 경계를 넘지 않음. 안전함.
+                float4 val = vload4(0, &input_img[img_addr]);
+
+                tile_input[l_row][k_offset + 0] = val.x;
+                tile_input[l_row][k_offset + 1] = val.y;
+                tile_input[l_row][k_offset + 2] = val.z;
+                tile_input[l_row][k_offset + 3] = val.w;
+
+            } else {
+                tile_input[l_row][k_offset + 0] = 0.0f;
+                tile_input[l_row][k_offset + 1] = 0.0f;
+                tile_input[l_row][k_offset + 2] = 0.0f;
+                tile_input[l_row][k_offset + 3] = 0.0f;
+            }
+        }
+
+        // -------------------------------------------------------------
+        // 2. Weights 로딩 (기존 Linear와 동일)
+        // -------------------------------------------------------------
+        int g_out_group_start = get_group_id(0) * LI_LWS_OUT * LI_OPT;
+        int tile_width_n = LI_LWS_OUT * LI_OPT;
+
+        #pragma unroll
+        for (int i = 0; i < 2; ++i) {
+            int load_idx = l_flat_idx * 2 + i;
+            int w_row_k = load_idx / tile_width_n;
+            int w_col_n = load_idx % tile_width_n;
+
+            if ((k_curr + w_row_k) < K && (g_out_group_start + w_col_n) < N) {
+                // Weights는 이미 [768, 768]로 Flatten 되어 있다고 가정
+                tile_weights[w_row_k][w_col_n] = weights[(g_out_group_start + w_col_n) * K + (k_curr + w_row_k)];
+            } else {
+                tile_weights[w_row_k][w_col_n] = 0.0f;
+            }
+        }
+
+        barrier(CLK_LOCAL_MEM_FENCE);
+
+        // -------------------------------------------------------------
+        // 3. 연산 (기존 Linear와 동일)
+        // -------------------------------------------------------------
+        for (int k = 0; k < LI_TILE; ++k) {
+            float w_cache[LI_OPT];
+            int l_col_base = l_out_idx * LI_OPT;
+            
+            #pragma unroll
+            for (int c = 0; c < LI_OPT; ++c) w_cache[c] = tile_weights[k][l_col_base + c];
+
+            #pragma unroll
+            for (int t = 0; t < LI_TPT; ++t) {
+                int l_row = l_token_idx * LI_TPT + t;
+                float in_val = tile_input[l_row][k]; // Cache Hit!
+
+                #pragma unroll
+                for (int c = 0; c < LI_OPT; ++c) {
+                    acc[t][c] = fma(in_val, w_cache[c], acc[t][c]);
+                }
+            }
+        }
+        barrier(CLK_LOCAL_MEM_FENCE);
+    }
+
+    // -----------------------------------------------------------------
+    // 결과 저장 (Bias 더하기 - 기존과 동일)
+    // -----------------------------------------------------------------
+    if (g_out_base >= N || g_token_base >= M) return;
+
+    // Bias는 [Out_Channels] 즉 768개
+    float4 b0 = vload4(0, &bias[g_out_base + 0]);
+    float4 b1 = vload4(0, &bias[g_out_base + 4]);
+
+    #pragma unroll
+    for (int t = 0; t < LI_TPT; ++t) {
+        int curr_g_token = g_token_base + t;
+        if (curr_g_token < M) {
+            float4 res0 = (float4)(acc[t][0], acc[t][1], acc[t][2], acc[t][3]) + b0;
+            float4 res1 = (float4)(acc[t][4], acc[t][5], acc[t][6], acc[t][7]) + b1;
+
+            __global float* out_ptr = &output[curr_g_token * N + g_out_base];
+            vstore4(res0, 0, out_ptr + 0);
+            vstore4(res1, 0, out_ptr + 4);
+        }
+    }
+}

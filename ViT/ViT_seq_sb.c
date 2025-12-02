@@ -114,20 +114,63 @@ static void padding_size(size_t*, const size_t*, int);
 
 ////////////////////////////////////// ViT function //////////////////////////////////////
 
+//static void conv2d(cl_mem input, cl_mem output, cl_mem weight, cl_mem bias) {
+//    cl_int err;
+//
+//    err = clSetKernelArg(ctx.k_patch_embed, 0, sizeof(cl_mem), &input); CHECK_ERROR(err);
+//    err = clSetKernelArg(ctx.k_patch_embed, 1, sizeof(cl_mem), &output); CHECK_ERROR(err);
+//    err = clSetKernelArg(ctx.k_patch_embed, 2, sizeof(cl_mem), &weight); CHECK_ERROR(err);
+//    err = clSetKernelArg(ctx.k_patch_embed, 3, sizeof(cl_mem), &bias); CHECK_ERROR(err);
+//
+//    err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_patch_embed, 3, NULL,
+//        ctx.gws_patch, ctx.lws_patch, 0, NULL, ctx.evt_ptr);
+//    CHECK_ERROR(err);
+//
+//#ifdef PROFILE_MODE
+//    profile_event(*ctx.evt_ptr, "Conv2d");
+//#endif
+//}
+
 static void conv2d(cl_mem input, cl_mem output, cl_mem weight, cl_mem bias) {
     cl_int err;
 
-    err = clSetKernelArg(ctx.k_patch_embed, 0, sizeof(cl_mem), &input); CHECK_ERROR(err);
-    err = clSetKernelArg(ctx.k_patch_embed, 1, sizeof(cl_mem), &output); CHECK_ERROR(err);
-    err = clSetKernelArg(ctx.k_patch_embed, 2, sizeof(cl_mem), &weight); CHECK_ERROR(err);
-    err = clSetKernelArg(ctx.k_patch_embed, 3, sizeof(cl_mem), &bias); CHECK_ERROR(err);
+    // 1. 차원 정의
+    // M: 전체 배치 내의 총 패치 개수 (Batch * 14 * 14)
+    int total_patches_m = batch_size * num_patches;
+    // K: 하나의 패치가 가진 픽셀 데이터 수 (3 * 16 * 16 = 768)
+    int patch_vol_k = in_chans * patch_size * patch_size;
+    // N: 임베딩 차원 (768)
+    int embed_n = embed_dim;
 
-    err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_patch_embed, 3, NULL,
-        ctx.gws_patch, ctx.lws_patch, 0, NULL, ctx.evt_ptr);
+    // 2. 커널 인자 설정 (총 7개)
+    // 주의: 커널 이름을 init_kernel에서 생성한 이름과 맞춰야 합니다 (예: ctx.k_patch_embed)
+    err = clSetKernelArg(ctx.k_patch_embed, 0, sizeof(cl_mem), &input);   CHECK_ERROR(err);
+    err = clSetKernelArg(ctx.k_patch_embed, 1, sizeof(cl_mem), &output);  CHECK_ERROR(err);
+    err = clSetKernelArg(ctx.k_patch_embed, 2, sizeof(cl_mem), &weight);  CHECK_ERROR(err);
+    err = clSetKernelArg(ctx.k_patch_embed, 3, sizeof(cl_mem), &bias);    CHECK_ERROR(err);
+    err = clSetKernelArg(ctx.k_patch_embed, 4, sizeof(int), &total_patches_m); CHECK_ERROR(err);
+    err = clSetKernelArg(ctx.k_patch_embed, 5, sizeof(int), &patch_vol_k);     CHECK_ERROR(err);
+    err = clSetKernelArg(ctx.k_patch_embed, 6, sizeof(int), &embed_n);         CHECK_ERROR(err);
+
+    // 3. Global Work Size 계산 (Linear 커널과 동일한 로직)
+    // Dim 0: Output Features (Embed Dim) 방향 -> li_opt 단위 처리
+    size_t gws_0 = (embed_n + li_opt - 1) / li_opt;
+    // Dim 1: Tokens (Patches) 방향 -> li_tpt 단위 처리
+    size_t gws_1 = (total_patches_m + li_tpt - 1) / li_tpt;
+
+    size_t gws[2] = { gws_0, gws_1 };
+
+    // 4. 패딩 (Local Size 배수에 맞춤)
+    // ctx.lws_linear는 {4, 64}로 설정되어 있어야 함
+    padding_size(gws, ctx.lws_linear, 2);
+
+    // 5. 실행 (2차원)
+    err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_patch_embed, 2, NULL,
+        gws, ctx.lws_linear, 0, NULL, ctx.evt_ptr);
     CHECK_ERROR(err);
 
 #ifdef PROFILE_MODE
-    profile_event(*ctx.evt_ptr, "Conv2d");
+    profile_event(*ctx.evt_ptr, "Conv2d (Fused Linear)");
 #endif
 }
 
@@ -387,7 +430,7 @@ static void init_kernel(Network* networks) {
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
     // Create Kernels
 
-    ctx.k_patch_embed = clCreateKernel(ctx.program, "patch_embedding", &err); CHECK_ERROR(err);
+    ctx.k_patch_embed = clCreateKernel(ctx.program, "patch_embedding_linear", &err); CHECK_ERROR(err);
     ctx.k_linear = clCreateKernel(ctx.program, "linear", &err); CHECK_ERROR(err);
     ctx.k_linear_gelu = clCreateKernel(ctx.program, "linear_gelu", &err); CHECK_ERROR(err);
 
