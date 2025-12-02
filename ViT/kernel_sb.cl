@@ -123,14 +123,12 @@ inline void linear_layer(
             
             #pragma unroll
             for (int c = 0; c < LI_OPT; ++c) {
-                // tile_weights[k][l_col_base + c]
                 w_cache[c] = tile_weights_ptr[k * LI_STRIDE_WEIGHT + (l_col_base + c)];
             }
 
             #pragma unroll
             for (int t = 0; t < LI_TPT; ++t) {
                 int l_row = l_token_idx * LI_TPT + t;
-                // tile_input[l_row][k]
                 float in_val = tile_input_ptr[l_row * LI_STRIDE_IN + k];
 
                 #pragma unroll
