@@ -1,14 +1,3 @@
-#define LOCAL_DIM_OUT 4
-#define LOCAL_DIM_TOKEN 64
-
-#define TOKENS_PER_THREAD 4
-#define OUTPUTS_PER_THREAD 8
-
-#define TILE_K 16
-
-#define INPUT_STRIDE 17
-#define WEIGHT_STRIDE 33
-
 inline float4 gelu4(float4 x) {
     const float INV_SQRT_2 = 0.70710678f;
 
@@ -39,33 +28,34 @@ __kernel void linear(
     const int K,
     const int N) {
 
-    __local float tile_input[LOCAL_DIM_TOKEN * TOKENS_PER_THREAD][INPUT_STRIDE];
-    __local float tile_weights[TILE_K][WEIGHT_STRIDE];
+    __local float tile_input[LI_LWS_TOKEN * LI_TPT][LI_STRIDE_IN];
+    __local float tile_weights[LI_TILE][LI_STRIDE_WEIGHT];
 
     int l_out_idx = get_local_id(0);
     int l_token_idx = get_local_id(1);
-    int l_flat_idx = l_token_idx * LOCAL_DIM_OUT + l_out_idx;
+    int l_flat_idx = l_token_idx * LI_LWS_OUT + l_out_idx;
 
-    int g_out_base = (get_group_id(0) * LOCAL_DIM_OUT + l_out_idx) * OUTPUTS_PER_THREAD;
-    int g_token_base = (get_group_id(1) * LOCAL_DIM_TOKEN + l_token_idx) * TOKENS_PER_THREAD;
+    int g_out_base = (get_group_id(0) * LI_LWS_OUT + l_out_idx) * LI_OPT;
+    int g_token_base = (get_group_id(1) * LI_LWS_TOKEN + l_token_idx) * LI_TPT;
 
-    float acc[TOKENS_PER_THREAD][OUTPUTS_PER_THREAD];
+    float acc[LI_TPT][LI_OPT];
 
     #pragma unroll
-    for (int t = 0; t < TOKENS_PER_THREAD; ++t) {
+    for (int t = 0; t < LI_TPT; ++t) {
         #pragma unroll
-        for (int c = 0; c < OUTPUTS_PER_THREAD; ++c) {
+        for (int c = 0; c < LI_OPT; ++c) {
             acc[t][c] = 0.0f;
         }
     }
 
-    for (int k_curr = 0; k_curr < K; k_curr += TILE_K) {
+    for (int k_curr = 0; k_curr < K; k_curr += LI_TILE) {
         
         #pragma unroll
-        for (int t = 0; t < TOKENS_PER_THREAD; ++t) {
-            int l_row = l_token_idx * TOKENS_PER_THREAD + t;
+        for (int t = 0; t < LI_TPT; ++t) {
+            int l_row = l_token_idx * LI_TPT + t;
             int g_row = g_token_base + t;
-            int k_offset = l_out_idx * 4;
+            
+            int k_offset = l_out_idx * 4; 
             
             if (g_row < M && (k_curr + k_offset) < K) {
                 float4 val = vload4(0, &input[g_row * K + (k_curr + k_offset)]);
@@ -81,8 +71,8 @@ __kernel void linear(
             }
         }
 
-        int g_out_group_start = get_group_id(0) * LOCAL_DIM_OUT * OUTPUTS_PER_THREAD;
-        int tile_width_n = LOCAL_DIM_OUT * OUTPUTS_PER_THREAD;
+        int g_out_group_start = get_group_id(0) * LI_LWS_OUT * LI_OPT;
+        int tile_width_n = LI_LWS_OUT * LI_OPT;
 
         #pragma unroll
         for (int i = 0; i < 2; ++i) {
@@ -100,22 +90,22 @@ __kernel void linear(
 
         barrier(CLK_LOCAL_MEM_FENCE);
 
-        for (int k = 0; k < TILE_K; ++k) {
-            float w_cache[OUTPUTS_PER_THREAD];
-            int l_col_base = l_out_idx * OUTPUTS_PER_THREAD;
+        for (int k = 0; k < LI_TILE; ++k) {
+            float w_cache[LI_OPT];
+            int l_col_base = l_out_idx * LI_OPT;
             
             #pragma unroll
-            for (int c = 0; c < OUTPUTS_PER_THREAD; ++c) {
+            for (int c = 0; c < LI_OPT; ++c) {
                 w_cache[c] = tile_weights[k][l_col_base + c];
             }
 
             #pragma unroll
-            for (int t = 0; t < TOKENS_PER_THREAD; ++t) {
-                int l_row = l_token_idx * TOKENS_PER_THREAD + t;
+            for (int t = 0; t < LI_TPT; ++t) {
+                int l_row = l_token_idx * LI_TPT + t;
                 float in_val = tile_input[l_row][k];
 
                 #pragma unroll
-                for (int c = 0; c < OUTPUTS_PER_THREAD; ++c) {
+                for (int c = 0; c < LI_OPT; ++c) {
                     acc[t][c] = fma(in_val, w_cache[c], acc[t][c]);
                 }
             }
@@ -129,7 +119,7 @@ __kernel void linear(
     float4 b1 = vload4(0, &bias[g_out_base + 4]);
 
     #pragma unroll
-    for (int t = 0; t < TOKENS_PER_THREAD; ++t) {
+    for (int t = 0; t < LI_TPT; ++t) {
         int curr_g_token = g_token_base + t;
 
         if (curr_g_token < M) {
@@ -152,33 +142,34 @@ __kernel void linear_gelu(
     const int K,
     const int N) {
 
-    __local float tile_input[LOCAL_DIM_TOKEN * TOKENS_PER_THREAD][INPUT_STRIDE];
-    __local float tile_weights[TILE_K][WEIGHT_STRIDE];
+    __local float tile_input[LI_LWS_TOKEN * LI_TPT][LI_STRIDE_IN];
+    __local float tile_weights[LI_TILE][LI_STRIDE_WEIGHT];
 
     int l_out_idx = get_local_id(0);
     int l_token_idx = get_local_id(1);
-    int l_flat_idx = l_token_idx * LOCAL_DIM_OUT + l_out_idx;
+    int l_flat_idx = l_token_idx * LI_LWS_OUT + l_out_idx;
 
-    int g_out_base = (get_group_id(0) * LOCAL_DIM_OUT + l_out_idx) * OUTPUTS_PER_THREAD;
-    int g_token_base = (get_group_id(1) * LOCAL_DIM_TOKEN + l_token_idx) * TOKENS_PER_THREAD;
+    int g_out_base = (get_group_id(0) * LI_LWS_OUT + l_out_idx) * LI_OPT;
+    int g_token_base = (get_group_id(1) * LI_LWS_TOKEN + l_token_idx) * LI_TPT;
 
-    float acc[TOKENS_PER_THREAD][OUTPUTS_PER_THREAD];
+    float acc[LI_TPT][LI_OPT];
 
     #pragma unroll
-    for (int t = 0; t < TOKENS_PER_THREAD; ++t) {
+    for (int t = 0; t < LI_TPT; ++t) {
         #pragma unroll
-        for (int c = 0; c < OUTPUTS_PER_THREAD; ++c) {
+        for (int c = 0; c < LI_OPT; ++c) {
             acc[t][c] = 0.0f;
         }
     }
 
-    for (int k_curr = 0; k_curr < K; k_curr += TILE_K) {
+    for (int k_curr = 0; k_curr < K; k_curr += LI_TILE) {
         
         #pragma unroll
-        for (int t = 0; t < TOKENS_PER_THREAD; ++t) {
-            int l_row = l_token_idx * TOKENS_PER_THREAD + t;
+        for (int t = 0; t < LI_TPT; ++t) {
+            int l_row = l_token_idx * LI_TPT + t;
             int g_row = g_token_base + t;
-            int k_offset = l_out_idx * 4;
+            
+            int k_offset = l_out_idx * 4; 
             
             if (g_row < M && (k_curr + k_offset) < K) {
                 float4 val = vload4(0, &input[g_row * K + (k_curr + k_offset)]);
@@ -194,8 +185,8 @@ __kernel void linear_gelu(
             }
         }
 
-        int g_out_group_start = get_group_id(0) * LOCAL_DIM_OUT * OUTPUTS_PER_THREAD;
-        int tile_width_n = LOCAL_DIM_OUT * OUTPUTS_PER_THREAD;
+        int g_out_group_start = get_group_id(0) * LI_LWS_OUT * LI_OPT;
+        int tile_width_n = LI_LWS_OUT * LI_OPT;
 
         #pragma unroll
         for (int i = 0; i < 2; ++i) {
@@ -213,22 +204,22 @@ __kernel void linear_gelu(
 
         barrier(CLK_LOCAL_MEM_FENCE);
 
-        for (int k = 0; k < TILE_K; ++k) {
-            float w_cache[OUTPUTS_PER_THREAD];
-            int l_col_base = l_out_idx * OUTPUTS_PER_THREAD;
+        for (int k = 0; k < LI_TILE; ++k) {
+            float w_cache[LI_OPT];
+            int l_col_base = l_out_idx * LI_OPT;
             
             #pragma unroll
-            for (int c = 0; c < OUTPUTS_PER_THREAD; ++c) {
+            for (int c = 0; c < LI_OPT; ++c) {
                 w_cache[c] = tile_weights[k][l_col_base + c];
             }
 
             #pragma unroll
-            for (int t = 0; t < TOKENS_PER_THREAD; ++t) {
-                int l_row = l_token_idx * TOKENS_PER_THREAD + t;
+            for (int t = 0; t < LI_TPT; ++t) {
+                int l_row = l_token_idx * LI_TPT + t;
                 float in_val = tile_input[l_row][k];
 
                 #pragma unroll
-                for (int c = 0; c < OUTPUTS_PER_THREAD; ++c) {
+                for (int c = 0; c < LI_OPT; ++c) {
                     acc[t][c] = fma(in_val, w_cache[c], acc[t][c]);
                 }
             }
@@ -242,7 +233,7 @@ __kernel void linear_gelu(
     float4 b1 = vload4(0, &bias[g_out_base + 4]);
 
     #pragma unroll
-    for (int t = 0; t < TOKENS_PER_THREAD; ++t) {
+    for (int t = 0; t < LI_TPT; ++t) {
         int curr_g_token = g_token_base + t;
 
         if (curr_g_token < M) {

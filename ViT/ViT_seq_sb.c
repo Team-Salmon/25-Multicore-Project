@@ -25,6 +25,15 @@
 #define batch_size 8
 #define linear_factor 8
 #define linear_factor2 4
+
+#define li_lws_out 4
+#define li_lws_token 64
+#define li_tpt 4 // tokens per thread
+#define li_opt 8 // output per thread
+#define li_tile 16
+#define li_stride_in 17
+#define li_stride_weight 33
+
 #define dfl_ls 256 // default local size
 
 #define output_size img_size / patch_size
@@ -330,7 +339,14 @@ static void init_kernel(Network* networks) {
         "-D TOKENS=%d "
         "-D TOTAL_TOKENS=%d "
         "-D HEAD_DIM=%d "
-        "-D QKV_DIM=%d ",
+        "-D QKV_DIM=%d "
+        "-D LI_LWS_OUT=%d "
+        "-D LI_LWS_TOKEN=%d "
+        "-D LI_TPT=%d "
+        "-D LI_OPT=%d "
+        "-D LI_TILE=%d "
+        "-D LI_STRIDE_IN=%d "
+        "-D LI_STRIDE_WEIGHT=%d ",
         batch_size,
         img_size,
         patch_size,
@@ -342,7 +358,14 @@ static void init_kernel(Network* networks) {
         tokens,
         total_tokens,
         head_dim,
-        qkv_dim
+        qkv_dim,
+        li_lws_out,
+        li_lws_token,
+        li_tpt,
+        li_opt,
+        li_tile,
+        li_stride_in,
+        li_stride_weight
     );
 
     err = clBuildProgram(ctx.program, 1, &ctx.device, build_options, NULL, NULL);
