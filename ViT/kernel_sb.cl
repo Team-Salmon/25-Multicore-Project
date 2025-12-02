@@ -1,7 +1,6 @@
-// kernel_sb.cl
-
 inline float4 gelu4(float4 x) {
     const float INV_SQRT_2 = 0.70710678f;
+
     const float p  = 0.3275911f;
     const float a1 = 0.254829592f;
     const float a2 = -0.284496736f;
@@ -11,19 +10,20 @@ inline float4 gelu4(float4 x) {
 
     float4 scaled_x = x * INV_SQRT_2;
     float4 abs_x = fabs(scaled_x);
+    
     float4 sign_val = copysign((float4)(1.0f), scaled_x);
     float4 t = native_recip(1.0f + p * abs_x);
     float4 y = ((((a5 * t + a4) * t) + a3) * t + a2) * t + a1;
     float4 erf = sign_val * (1.0f - y * t * native_exp(-abs_x * abs_x));
+    
     return 0.5f * x * (1.0f + erf);
 }
 
-// [핵심] Tile 16에 최적화된 고속 Linear 커널 (Transposed Vector Load 적용)
 __kernel void linear_default(
-    __global const float* restrict input,
-    __global float* restrict output,
-    __global const float* restrict weights,
-    __global const float* restrict bias,
+    __global const float* input,
+    __global float* output,
+    __global const float* weights,
+    __global const float* bias,
     const int M, 
     const int K, 
     const int N ) {
@@ -36,13 +36,9 @@ __kernel void linear_default(
     
     int g_out_base = (get_group_id(0) * LI_LWS_OUT + l_out_idx) * LI_OPT;
     int g_token_base = (get_group_id(1) * LI_LWS_TOKEN + l_token_idx) * LI_TPT;
-    
-    // 스레드 선형 인덱스 (Weight 로딩용)
-    int tid = l_token_idx * LI_LWS_OUT + l_out_idx; // 0 ~ 255
 
     float acc[LI_TPT][LI_OPT];
 
-    // 누적값 초기화
     #pragma unroll
     for (int t = 0; t < LI_TPT; ++t) {
         #pragma unroll
@@ -50,81 +46,53 @@ __kernel void linear_default(
     }
 
     for (int k_curr = 0; k_curr < K; k_curr += LI_TILE) {
-        
-        // -------------------------------------------------------------------
-        // 1. Input 로딩 (변경 없음 - 이미 효율적임)
-        // -------------------------------------------------------------------
         #pragma unroll
         for (int t = 0; t < LI_TPT; ++t) {
             int l_row = l_token_idx * LI_TPT + t;
             int g_row = g_token_base + t;
             int k_offset = l_out_idx * 4;
-
-            float4 val = (float4)(0.0f);
-            if (g_row < M && (k_curr + k_offset) < K) {
-                val = vload4(0, &input[g_row * K + (k_curr + k_offset)]);
-            }
-            // Local Store (float4)
-            vstore4(val, 0, &tile_input[l_row][k_offset]);
-        }
-
-        // -------------------------------------------------------------------
-        // 2. Weight 로딩 [완전 변경] -> Vectorized Transposed Load
-        // 기존의 복잡한 나머지(%) 연산 제거하고 128개 스레드가 float4로 읽음
-        // -------------------------------------------------------------------
-        int g_out_group_start = get_group_id(0) * LI_LWS_OUT * LI_OPT;
-        
-        // 256개 스레드 중 앞쪽 128개만 사용하여 효율적으로 로딩
-        if (tid < 128) {
-            // 우리가 로딩할 Tile은 16(K) x 32(N) 크기임 (총 512 float)
-            // Global Weights는 [N][K] 형태.
-            // float4로 읽으면 [N][K..K+3] 형태가 됨.
             
-            int row_n = tid >> 2;       // tid / 4 (0..31) -> N 차원 인덱스
-            int col_k = (tid & 3) << 2; // (tid % 4) * 4 (0,4,8,12) -> K 차원 인덱스
-
-            // Boundary Check
-            if ((g_out_group_start + row_n) < N && (k_curr + col_k) < K) {
-                // Global에서 연속된 K값 4개를 한번에 읽음 (빠름!)
-                float4 vec = vload4(0, &weights[(g_out_group_start + row_n) * K + (k_curr + col_k)]);
-                
-                // Local Memory에는 Transpose해서 저장 (계산할 때 편하게)
-                // Bank Conflict 없이 저장됨 (Stride 33 덕분)
-                tile_weights[col_k + 0][row_n] = vec.x;
-                tile_weights[col_k + 1][row_n] = vec.y;
-                tile_weights[col_k + 2][row_n] = vec.z;
-                tile_weights[col_k + 3][row_n] = vec.w;
+            if (g_row < M && (k_curr + k_offset) < K) {
+                float4 val = vload4(0, &input[g_row * K + (k_curr + k_offset)]);
+                tile_input[l_row][k_offset + 0] = val.x;
+                tile_input[l_row][k_offset + 1] = val.y;
+                tile_input[l_row][k_offset + 2] = val.z;
+                tile_input[l_row][k_offset + 3] = val.w;
             } else {
-                // Padding (0.0f)
-                tile_weights[col_k + 0][row_n] = 0.0f;
-                tile_weights[col_k + 1][row_n] = 0.0f;
-                tile_weights[col_k + 2][row_n] = 0.0f;
-                tile_weights[col_k + 3][row_n] = 0.0f;
+                tile_input[l_row][k_offset + 0] = 0.0f;
+                tile_input[l_row][k_offset + 1] = 0.0f;
+                tile_input[l_row][k_offset + 2] = 0.0f;
+                tile_input[l_row][k_offset + 3] = 0.0f;
             }
         }
-        
+
+        int g_out_group_start = get_group_id(0) * LI_LWS_OUT * LI_OPT;
+
+        #pragma unroll
+        for (int i = 0; i < 2; ++i) {
+            int l_flat = l_token_idx * LI_LWS_OUT + l_out_idx;
+            int load_idx = l_flat * 2 + i;
+            int w_r = load_idx & (LI_TILE - 1);
+            int w_c = load_idx >> 4;
+
+            if ((k_curr + w_r) < K && (g_out_group_start + w_c) < N) {
+                tile_weights[w_r][w_c] = weights[(g_out_group_start + w_c) * K + (k_curr + w_r)];
+            } else {
+                tile_weights[w_r][w_c] = 0.0f;
+            }
+        }
+
         barrier(CLK_LOCAL_MEM_FENCE);
 
-        // -------------------------------------------------------------------
-        // 3. 계산 (Compute)
-        // -------------------------------------------------------------------
-        #pragma unroll 16
         for (int k = 0; k < LI_TILE; ++k) {
             float w_cache[LI_OPT];
             int l_col_base = l_out_idx * LI_OPT;
-
-            // Weight 레지스터 캐싱
             #pragma unroll
-            for (int c = 0; c < LI_OPT; ++c) {
-                w_cache[c] = tile_weights[k][l_col_base + c];
-            }
-
-            // FMA 연산
+            for (int c = 0; c < LI_OPT; ++c) w_cache[c] = tile_weights[k][l_col_base + c];
             #pragma unroll
             for (int t = 0; t < LI_TPT; ++t) {
                 int l_row = l_token_idx * LI_TPT + t;
                 float in_val = tile_input[l_row][k];
-
                 #pragma unroll
                 for (int c = 0; c < LI_OPT; ++c) {
                     acc[t][c] = fma(in_val, w_cache[c], acc[t][c]);
@@ -136,11 +104,8 @@ __kernel void linear_default(
 
     if (g_out_base >= N || g_token_base >= M) return;
 
-    // Bias & Store
-    float4 b0 = (float4)(0.0f);
-    float4 b1 = (float4)(0.0f);
-    if (g_out_base + 4 <= N) b0 = vload4(0, &bias[g_out_base + 0]);
-    if (g_out_base + 8 <= N) b1 = vload4(0, &bias[g_out_base + 4]);
+    float4 b0 = vload4(0, &bias[g_out_base + 0]);
+    float4 b1 = vload4(0, &bias[g_out_base + 4]);
 
     #pragma unroll
     for (int t = 0; t < LI_TPT; ++t) {
@@ -150,19 +115,17 @@ __kernel void linear_default(
             float4 res1 = (float4)(acc[t][4], acc[t][5], acc[t][6], acc[t][7]) + b1;
 
             __global float* out_ptr = &output[curr_g_token * N + g_out_base];
-            
-            if (g_out_base + 4 <= N) vstore4(res0, 0, out_ptr + 0);
-            if (g_out_base + 8 <= N) vstore4(res1, 0, out_ptr + 4);
+            vstore4(res0, 0, out_ptr + 0);
+            vstore4(res1, 0, out_ptr + 4);
         }
     }
 }
 
-// linear_gelu: 위와 똑같고 마지막에 gelu4()만 추가됨
 __kernel void linear_gelu(
-    __global const float* restrict input,
-    __global float* restrict output,
-    __global const float* restrict weights,
-    __global const float* restrict bias,
+    __global const float* input,
+    __global float* output,
+    __global const float* weights,
+    __global const float* bias,
     const int M, 
     const int K, 
     const int N) {
@@ -175,7 +138,6 @@ __kernel void linear_gelu(
     
     int g_out_base = (get_group_id(0) * LI_LWS_OUT + l_out_idx) * LI_OPT;
     int g_token_base = (get_group_id(1) * LI_LWS_TOKEN + l_token_idx) * LI_TPT;
-    int tid = l_token_idx * LI_LWS_OUT + l_out_idx;
 
     float acc[LI_TPT][LI_OPT];
 
@@ -191,34 +153,39 @@ __kernel void linear_gelu(
             int l_row = l_token_idx * LI_TPT + t;
             int g_row = g_token_base + t;
             int k_offset = l_out_idx * 4;
-            float4 val = (float4)(0.0f);
+            
             if (g_row < M && (k_curr + k_offset) < K) {
-                val = vload4(0, &input[g_row * K + (k_curr + k_offset)]);
+                float4 val = vload4(0, &input[g_row * K + (k_curr + k_offset)]);
+                tile_input[l_row][k_offset + 0] = val.x;
+                tile_input[l_row][k_offset + 1] = val.y;
+                tile_input[l_row][k_offset + 2] = val.z;
+                tile_input[l_row][k_offset + 3] = val.w;
+            } else {
+                tile_input[l_row][k_offset + 0] = 0.0f;
+                tile_input[l_row][k_offset + 1] = 0.0f;
+                tile_input[l_row][k_offset + 2] = 0.0f;
+                tile_input[l_row][k_offset + 3] = 0.0f;
             }
-            vstore4(val, 0, &tile_input[l_row][k_offset]);
         }
 
         int g_out_group_start = get_group_id(0) * LI_LWS_OUT * LI_OPT;
-        if (tid < 128) {
-            int row_n = tid >> 2;
-            int col_k = (tid & 3) << 2; 
-            if ((g_out_group_start + row_n) < N && (k_curr + col_k) < K) {
-                float4 vec = vload4(0, &weights[(g_out_group_start + row_n) * K + (k_curr + col_k)]);
-                tile_weights[col_k + 0][row_n] = vec.x;
-                tile_weights[col_k + 1][row_n] = vec.y;
-                tile_weights[col_k + 2][row_n] = vec.z;
-                tile_weights[col_k + 3][row_n] = vec.w;
+
+        #pragma unroll
+        for (int i = 0; i < 2; ++i) {
+            int l_flat = l_token_idx * LI_LWS_OUT + l_out_idx;
+            int load_idx = l_flat * 2 + i;
+            int w_r = load_idx & (LI_TILE - 1);
+            int w_c = load_idx >> 4;
+
+            if ((k_curr + w_r) < K && (g_out_group_start + w_c) < N) {
+                tile_weights[w_r][w_c] = weights[(g_out_group_start + w_c) * K + (k_curr + w_r)];
             } else {
-                tile_weights[col_k + 0][row_n] = 0.0f;
-                tile_weights[col_k + 1][row_n] = 0.0f;
-                tile_weights[col_k + 2][row_n] = 0.0f;
-                tile_weights[col_k + 3][row_n] = 0.0f;
+                tile_weights[w_r][w_c] = 0.0f;
             }
         }
-        
+
         barrier(CLK_LOCAL_MEM_FENCE);
 
-        #pragma unroll 16
         for (int k = 0; k < LI_TILE; ++k) {
             float w_cache[LI_OPT];
             int l_col_base = l_out_idx * LI_OPT;
@@ -229,7 +196,9 @@ __kernel void linear_gelu(
                 int l_row = l_token_idx * LI_TPT + t;
                 float in_val = tile_input[l_row][k];
                 #pragma unroll
-                for (int c = 0; c < LI_OPT; ++c) acc[t][c] = fma(in_val, w_cache[c], acc[t][c]);
+                for (int c = 0; c < LI_OPT; ++c) {
+                    acc[t][c] = fma(in_val, w_cache[c], acc[t][c]);
+                }
             }
         }
         barrier(CLK_LOCAL_MEM_FENCE);
@@ -237,10 +206,8 @@ __kernel void linear_gelu(
 
     if (g_out_base >= N || g_token_base >= M) return;
 
-    float4 b0 = (float4)(0.0f);
-    float4 b1 = (float4)(0.0f);
-    if (g_out_base + 4 <= N) b0 = vload4(0, &bias[g_out_base + 0]);
-    if (g_out_base + 8 <= N) b1 = vload4(0, &bias[g_out_base + 4]);
+    float4 b0 = vload4(0, &bias[g_out_base + 0]);
+    float4 b1 = vload4(0, &bias[g_out_base + 4]);
 
     #pragma unroll
     for (int t = 0; t < LI_TPT; ++t) {
@@ -254,20 +221,17 @@ __kernel void linear_gelu(
             res1 = gelu4(res1);
 
             __global float* out_ptr = &output[curr_g_token * N + g_out_base];
-            if (g_out_base + 4 <= N) vstore4(res0, 0, out_ptr + 0);
-            if (g_out_base + 8 <= N) vstore4(res1, 0, out_ptr + 4);
+            vstore4(res0, 0, out_ptr + 0);
+            vstore4(res1, 0, out_ptr + 4);
         }
     }
 }
 
-// Conv2d는 구조가 다르므로 기존 로직 유지하되 안전하게 최적화
-// (이전 코드 그대로 두거나, 필요한 경우 다시 요청해주세요. 
-// 일단 위 2개 함수가 성능의 90%를 좌우합니다.)
 __kernel void linear_conv2d(
-    __global const float* restrict input_img,
-    __global float* restrict output,
-    __global const float* restrict weights,
-    __global const float* restrict bias,
+    __global const float* input_img,
+    __global float* output,
+    __global const float* weights,
+    __global const float* bias,
     const int M, 
     const int K, 
     const int N) {
@@ -280,7 +244,6 @@ __kernel void linear_conv2d(
     
     int g_out_base = (get_group_id(0) * LI_LWS_OUT + l_out_idx) * LI_OPT;
     int g_token_base = (get_group_id(1) * LI_LWS_TOKEN + l_token_idx) * LI_TPT;
-    int tid = l_token_idx * LI_LWS_OUT + l_out_idx;
 
     float acc[LI_TPT][LI_OPT];
     int patch_base_addr[LI_TPT];
@@ -291,10 +254,13 @@ __kernel void linear_conv2d(
         if (g_patch_idx < M) {
             int batch_idx = g_patch_idx / (OUTPUT_SIZE * OUTPUT_SIZE);
             int idx_in_batch = g_patch_idx % (OUTPUT_SIZE * OUTPUT_SIZE);
+            
             int patch_y = idx_in_batch / OUTPUT_SIZE;
             int patch_x = idx_in_batch % OUTPUT_SIZE;
-            int global_y_base = (patch_y << 4); 
-            int global_x_base = (patch_x << 4);
+
+            int global_y_base = (patch_y << 4); // patch_y * 16
+            int global_x_base = (patch_x << 4); // patch_x * 16
+            
             patch_base_addr[t] = (batch_idx * 3) * (IMG_SIZE * IMG_SIZE) 
                                  + global_y_base * IMG_SIZE + global_x_base;
         }
@@ -307,8 +273,6 @@ __kernel void linear_conv2d(
     }
 
     for (int k_curr = 0; k_curr < K; k_curr += LI_TILE) {
-        
-        // Input Load (Patch logic maintained)
         #pragma unroll
         for (int t = 0; t < LI_TPT; ++t) {
             int l_row = l_token_idx * LI_TPT + t;
@@ -316,41 +280,49 @@ __kernel void linear_conv2d(
             int k_offset = l_out_idx * 4;
             int current_k = k_curr + k_offset;
 
-            float4 val = (float4)(0.0f);
             if (g_row < M && current_k < K) {
-                int ch = current_k / (PATCH_SIZE * PATCH_SIZE);
-                int rem_k = current_k & ((PATCH_SIZE * PATCH_SIZE) - 1);
-                int py = rem_k >> 4;
+                int ch = current_k / (PATCH_SIZE * PATCH_SIZE);         
+                int rem_k = current_k & ((PATCH_SIZE * PATCH_SIZE) - 1); // 255
+                
+                int py = rem_k >> 4;               
                 int px = rem_k & (PATCH_SIZE - 1); 
-                int addr = patch_base_addr[t] + ch * (IMG_SIZE * IMG_SIZE) + py * IMG_SIZE + px;
-                val = vload4(0, &input_img[addr]);
+
+                int addr = patch_base_addr[t] 
+                           + ch * (IMG_SIZE * IMG_SIZE) 
+                           + py * IMG_SIZE + px;
+
+                float4 val = vload4(0, &input_img[addr]);
+                
+                tile_input[l_row][k_offset + 0] = val.x;
+                tile_input[l_row][k_offset + 1] = val.y;
+                tile_input[l_row][k_offset + 2] = val.z;
+                tile_input[l_row][k_offset + 3] = val.w;
+            } else {
+                tile_input[l_row][k_offset + 0] = 0.0f;
+                tile_input[l_row][k_offset + 1] = 0.0f;
+                tile_input[l_row][k_offset + 2] = 0.0f;
+                tile_input[l_row][k_offset + 3] = 0.0f;
             }
-            vstore4(val, 0, &tile_input[l_row][k_offset]);
         }
 
         int g_out_group_start = get_group_id(0) * LI_LWS_OUT * LI_OPT;
-        
-        // Weight Loading Optimized
-        if (tid < 128) {
-            int row_n = tid >> 2; 
-            int col_k = (tid & 3) << 2; 
-            if ((g_out_group_start + row_n) < N && (k_curr + col_k) < K) {
-                float4 vec = vload4(0, &weights[(g_out_group_start + row_n) * K + (k_curr + col_k)]);
-                tile_weights[col_k + 0][row_n] = vec.x;
-                tile_weights[col_k + 1][row_n] = vec.y;
-                tile_weights[col_k + 2][row_n] = vec.z;
-                tile_weights[col_k + 3][row_n] = vec.w;
+
+        #pragma unroll
+        for (int i = 0; i < 2; ++i) {
+            int l_flat = l_token_idx * LI_LWS_OUT + l_out_idx;
+            int load_idx = l_flat * 2 + i;
+            int w_r = load_idx & (LI_TILE - 1);
+            int w_c = load_idx >> 4;
+
+            if ((k_curr + w_r) < K && (g_out_group_start + w_c) < N) {
+                tile_weights[w_r][w_c] = weights[(g_out_group_start + w_c) * K + (k_curr + w_r)];
             } else {
-                tile_weights[col_k + 0][row_n] = 0.0f;
-                tile_weights[col_k + 1][row_n] = 0.0f;
-                tile_weights[col_k + 2][row_n] = 0.0f;
-                tile_weights[col_k + 3][row_n] = 0.0f;
+                tile_weights[w_r][w_c] = 0.0f;
             }
         }
 
         barrier(CLK_LOCAL_MEM_FENCE);
 
-        #pragma unroll 16
         for (int k = 0; k < LI_TILE; ++k) {
             float w_cache[LI_OPT];
             int l_col_base = l_out_idx * LI_OPT;
@@ -361,7 +333,9 @@ __kernel void linear_conv2d(
                 int l_row = l_token_idx * LI_TPT + t;
                 float in_val = tile_input[l_row][k];
                 #pragma unroll
-                for (int c = 0; c < LI_OPT; ++c) acc[t][c] = fma(in_val, w_cache[c], acc[t][c]);
+                for (int c = 0; c < LI_OPT; ++c) {
+                    acc[t][c] = fma(in_val, w_cache[c], acc[t][c]);
+                }
             }
         }
         barrier(CLK_LOCAL_MEM_FENCE);
@@ -369,10 +343,8 @@ __kernel void linear_conv2d(
 
     if (g_out_base >= N || g_token_base >= M) return;
 
-    float4 b0 = (float4)(0.0f);
-    float4 b1 = (float4)(0.0f);
-    if (g_out_base + 4 <= N) b0 = vload4(0, &bias[g_out_base + 0]);
-    if (g_out_base + 8 <= N) b1 = vload4(0, &bias[g_out_base + 4]);
+    float4 b0 = vload4(0, &bias[g_out_base + 0]);
+    float4 b1 = vload4(0, &bias[g_out_base + 4]);
 
     #pragma unroll
     for (int t = 0; t < LI_TPT; ++t) {
@@ -382,12 +354,11 @@ __kernel void linear_conv2d(
             float4 res1 = (float4)(acc[t][4], acc[t][5], acc[t][6], acc[t][7]) + b1;
 
             __global float* out_ptr = &output[curr_g_token * N + g_out_base];
-            if (g_out_base + 4 <= N) vstore4(res0, 0, out_ptr + 0);
-            if (g_out_base + 8 <= N) vstore4(res1, 0, out_ptr + 4);
+            vstore4(res0, 0, out_ptr + 0);
+            vstore4(res1, 0, out_ptr + 4);
         }
     }
 }
-// 나머지 커널(attn_score 등)은 그대로 두세요.
 
 __kernel void attn_score(
     __global const float* QKV,
