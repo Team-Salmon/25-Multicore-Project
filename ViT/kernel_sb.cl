@@ -1,22 +1,10 @@
-// 호스트 코드 설정: local_work_size = {4, 64}
-#define L_SIZE_0 4   // Output Channel Dim (lx)
-#define L_SIZE_1 64  // Token Dim (ly)
+#define LOCAL_DIM_OUT 4
+#define LOCAL_DIM_TOKEN 64
+#define TOKENS_PER_THREAD 4
+#define OUTPUTS_PER_THREAD 8
+#define TILE_K 16
 
-// 스레드당 처리량 (기존 유지)
-#define PER_THREAD_M 4 // 한 스레드가 처리하는 토큰 수
-#define PER_THREAD_N 8 // 한 스레드가 처리하는 출력 수
-
-// 타일 크기
-#define TILE_K 16 
-
-// 로컬 메모리 크기 계산
-// Input: (64 * 4) tokens * 16 K = 256 * 16
-// Weights: 16 K * (4 * 8) outputs = 16 * 32
-// Bank Conflict 방지를 위해 열 크기에 +1 (Padding)
-#define L_STRIDE_K 17 
-#define L_STRIDE_N 33
-
-inline float gelu(float x) {
+inline float4 gelu4(float4 x) {
     const float INV_SQRT_2 = 0.70710678f;
 
     const float p  = 0.3275911f;
@@ -26,12 +14,14 @@ inline float gelu(float x) {
     const float a4 = -1.453152027f;
     const float a5 = 1.061405429f;
 
-    float scaled_x = x * INV_SQRT_2;
-    float abs_x = fabs(scaled_x);
-    float sign_val = (scaled_x >= 0.0f) ? 1.0f : -1.0f;
-    float t = native_recip(1.0f + p * abs_x);
-    float y = ((((a5 * t + a4) * t) + a3) * t + a2) * t + a1;
-    float erf = sign_val * (1.0f - y * t * native_exp(-abs_x * abs_x));
+    float4 scaled_x = x * INV_SQRT_2;
+    float4 abs_x = fabs(scaled_x);
+    
+    float4 sign_val = copysign((float4)(1.0f), scaled_x);
+    float4 t = native_recip(1.0f + p * abs_x);
+    float4 y = ((((a5 * t + a4) * t) + a3) * t + a2) * t + a1;
+    float4 erf = sign_val * (1.0f - y * t * native_exp(-abs_x * abs_x));
+    
     return 0.5f * x * (1.0f + erf);
 }
 
@@ -44,146 +34,102 @@ __kernel void linear(
     const int K,
     const int N) {
 
-    // 로컬 메모리 선언 (Padding 적용)
-    // l_input: [Token Index][K Index]
-    __local float l_input[L_SIZE_1 * PER_THREAD_M][L_STRIDE_K];
-    // l_weights: [K Index][Output Index]
-    __local float l_weights[TILE_K][L_STRIDE_N];
+    __local float tile_input[LOCAL_DIM_TOKEN * TOKENS_PER_THREAD][TILE_K];
+    __local float tile_weights[TILE_K][LOCAL_DIM_OUT * OUTPUTS_PER_THREAD];
 
-    int lx = get_local_id(0); // 0 ~ 3
-    int ly = get_local_id(1); // 0 ~ 63
-    int local_linear_id = ly * L_SIZE_0 + lx; // 0 ~ 255
+    int l_out_idx = get_local_id(0);
+    int l_token_idx = get_local_id(1);
+    int l_flat_idx = l_token_idx * LOCAL_DIM_OUT + l_out_idx;
 
-    int out_group_idx = get_group_id(0) * L_SIZE_0 + lx;
-    int token_group_idx = get_group_id(1) * L_SIZE_1 + ly;
+    int g_out_base = (get_group_id(0) * LOCAL_DIM_OUT + l_out_idx) * OUTPUTS_PER_THREAD;
+    int g_token_base = (get_group_id(1) * LOCAL_DIM_TOKEN + l_token_idx) * TOKENS_PER_THREAD;
 
-    int out_idx_base = out_group_idx * PER_THREAD_N;
-    int token_idx_base = token_group_idx * PER_THREAD_M;
+    float acc[TOKENS_PER_THREAD][OUTPUTS_PER_THREAD];
 
-    // Accumulator
-    float acc[PER_THREAD_M][PER_THREAD_N]; // 실제로는 스칼라 누적용
-
-    // 초기화
     #pragma unroll
-    for (int t = 0; t < PER_THREAD_M; ++t) {
+    for (int t = 0; t < TOKENS_PER_THREAD; ++t) {
         #pragma unroll
-        for (int c = 0; c < PER_THREAD_N; ++c) {
+        for (int c = 0; c < OUTPUTS_PER_THREAD; ++c) {
             acc[t][c] = 0.0f;
         }
     }
 
-    // =========================================================
-    // Main Loop: TILE_K (16) 단위로 이동
-    // =========================================================
-    for (int k_tile = 0; k_tile < K; k_tile += TILE_K) {
-
-        // -----------------------------------------------------
-        // 1. Input 로딩 (협력 로딩 최적화)
-        // lx(0~3) 4명이 협력하여 K차원(16개)을 4개씩 나눠서 로딩
-        // -----------------------------------------------------
+    for (int k_curr = 0; k_curr < K; k_curr += TILE_K) {
         #pragma unroll
-        for (int t = 0; t < PER_THREAD_M; ++t) {
-            // 현재 스레드가 담당하는 로컬 토큰 인덱스 (0~255)
-            int local_token_row = ly * PER_THREAD_M + t;
-            // 글로벌 토큰 인덱스
-            int global_token_idx = token_idx_base + t;
-
-            // lx (0~3)에 따라 읽어올 K 오프셋 결정 (0, 4, 8, 12)
-            int k_offset = lx * 4; 
+        for (int t = 0; t < TOKENS_PER_THREAD; ++t) {
+            int l_row = l_token_idx * TOKENS_PER_THREAD + t;
+            int g_row = g_token_base + t;
+            int k_offset = l_out_idx * 4;
             
-            if (global_token_idx < M && (k_tile + k_offset) < K) {
-                // float4 하나만 딱 읽으면 됨! (매우 효율적)
-                float4 val = vload4(0, &input[global_token_idx * K + (k_tile + k_offset)]);
-                
-                // 로컬 메모리에 저장
-                l_input[local_token_row][k_offset + 0] = val.x;
-                l_input[local_token_row][k_offset + 1] = val.y;
-                l_input[local_token_row][k_offset + 2] = val.z;
-                l_input[local_token_row][k_offset + 3] = val.w;
+            if (g_row < M && (k_curr + k_offset) < K) {
+                float4 val = vload4(0, &input[g_row * K + (k_curr + k_offset)]);
+                tile_input[l_row][k_offset + 0] = val.x;
+                tile_input[l_row][k_offset + 1] = val.y;
+                tile_input[l_row][k_offset + 2] = val.z;
+                tile_input[l_row][k_offset + 3] = val.w;
             } else {
-                l_input[local_token_row][k_offset + 0] = 0.0f;
-                l_input[local_token_row][k_offset + 1] = 0.0f;
-                l_input[local_token_row][k_offset + 2] = 0.0f;
-                l_input[local_token_row][k_offset + 3] = 0.0f;
+                tile_input[l_row][k_offset + 0] = 0.0f;
+                tile_input[l_row][k_offset + 1] = 0.0f;
+                tile_input[l_row][k_offset + 2] = 0.0f;
+                tile_input[l_row][k_offset + 3] = 0.0f;
             }
         }
 
-        // -----------------------------------------------------
-        // 2. Weights 로딩 (선형 로딩)
-        // 타일 크기: 16(K) * 32(N) = 512 floats
-        // 스레드 수: 256명 -> 인당 2 float씩 읽어서 채움
-        // -----------------------------------------------------
-        int global_out_group_start = get_group_id(0) * L_SIZE_0 * PER_THREAD_N; // 현재 WorkGroup의 시작 Output Index
+        int g_out_group_start = get_group_id(0) * LOCAL_DIM_OUT * OUTPUTS_PER_THREAD;
+        int tile_width_n = LOCAL_DIM_OUT * OUTPUTS_PER_THREAD;
 
-        // 각 스레드가 2개씩 로딩 (512개 / 256명 = 2개)
         #pragma unroll
         for (int i = 0; i < 2; ++i) {
-            int load_idx = local_linear_id * 2 + i; // 0 ~ 511
-            
-            // 2D 인덱스로 변환 (Row: k, Col: n)
-            int w_k = load_idx / (L_SIZE_0 * PER_THREAD_N); // 0 ~ 15
-            int w_n = load_idx % (L_SIZE_0 * PER_THREAD_N); // 0 ~ 31
+            int load_idx = l_flat_idx * 2 + i;
+            int w_row_k = load_idx / tile_width_n;
+            int w_col_n = load_idx % tile_width_n;
 
-            if ((k_tile + w_k) < K && (global_out_group_start + w_n) < N) {
-                float val = weights[(global_out_group_start + w_n) * K + (k_tile + w_k)]; // Transposed? 확인필요
-                // *주의*: 원래 코드에서 weights 읽는 패턴은 weights[out * K + k] 였습니다.
-                // 즉, Global Memory에서는 Row-Major로 가정하고 읽습니다.
-                
-                l_weights[w_k][w_n] = val;
+            if ((k_curr + w_row_k) < K && (g_out_group_start + w_col_n) < N) {
+                tile_weights[w_row_k][w_col_n] = weights[(g_out_group_start + w_col_n) * K + (k_curr + w_row_k)];
             } else {
-                l_weights[w_k][w_n] = 0.0f;
+                tile_weights[w_row_k][w_col_n] = 0.0f;
             }
         }
 
         barrier(CLK_LOCAL_MEM_FENCE);
 
-        // -----------------------------------------------------
-        // 3. 연산 (Compute)
-        // -----------------------------------------------------
         for (int k = 0; k < TILE_K; ++k) {
-            
-            // Weights 레지스터 캐싱
-            float w_reg[PER_THREAD_N];
-            int local_n_base = lx * PER_THREAD_N;
+            float w_cache[OUTPUTS_PER_THREAD];
+            int l_col_base = l_out_idx * OUTPUTS_PER_THREAD;
             
             #pragma unroll
-            for (int c = 0; c < PER_THREAD_N; ++c) {
-                w_reg[c] = l_weights[k][local_n_base + c];
+            for (int c = 0; c < OUTPUTS_PER_THREAD; ++c) {
+                w_cache[c] = tile_weights[k][l_col_base + c];
             }
 
-            // 계산
             #pragma unroll
-            for (int t = 0; t < PER_THREAD_M; ++t) {
-                int local_m_idx = ly * PER_THREAD_M + t;
-                // Bank Conflict 없이 읽음 (L_STRIDE_K 덕분)
-                float in_val = l_input[local_m_idx][k];
+            for (int t = 0; t < TOKENS_PER_THREAD; ++t) {
+                int l_row = l_token_idx * TOKENS_PER_THREAD + t;
+                float in_val = tile_input[l_row][k];
 
                 #pragma unroll
-                for (int c = 0; c < PER_THREAD_N; ++c) {
-                    acc[t][c] = fma(in_val, w_reg[c], acc[t][c]);
+                for (int c = 0; c < OUTPUTS_PER_THREAD; ++c) {
+                    acc[t][c] = fma(in_val, w_cache[c], acc[t][c]);
                 }
             }
         }
         barrier(CLK_LOCAL_MEM_FENCE);
     }
 
-    // =========================================================
-    // 결과 저장 (이전과 동일)
-    // =========================================================
-    if (out_idx_base >= N || token_idx_base >= M) return;
+    if (g_out_base >= N || g_token_base >= M) return;
 
-    float4 b0 = vload4(0, &bias[out_idx_base + 0]);
-    float4 b1 = vload4(0, &bias[out_idx_base + 4]);
+    float4 b0 = vload4(0, &bias[g_out_base + 0]);
+    float4 b1 = vload4(0, &bias[g_out_base + 4]);
 
     #pragma unroll
-    for (int t = 0; t < PER_THREAD_M; ++t) {
-        int current_token_idx = token_idx_base + t;
+    for (int t = 0; t < TOKENS_PER_THREAD; ++t) {
+        int curr_g_token = g_token_base + t;
 
-        if (current_token_idx < M) {
+        if (curr_g_token < M) {
             float4 res0 = (float4)(acc[t][0], acc[t][1], acc[t][2], acc[t][3]) + b0;
             float4 res1 = (float4)(acc[t][4], acc[t][5], acc[t][6], acc[t][7]) + b1;
 
-            __global float* out_ptr = &output[current_token_idx * N + out_idx_base];
+            __global float* out_ptr = &output[curr_g_token * N + g_out_base];
             vstore4(res0, 0, out_ptr + 0);
             vstore4(res1, 0, out_ptr + 4);
         }
@@ -199,70 +145,102 @@ __kernel void linear_gelu(
     const int K,
     const int N) {
 
-    int out_group_idx = get_global_id(0);
-    int token_group_idx = get_global_id(1);
+    __local float tile_input[LOCAL_DIM_TOKEN * TOKENS_PER_THREAD][TILE_K];
+    __local float tile_weights[TILE_K][LOCAL_DIM_OUT * OUTPUTS_PER_THREAD];
 
-    int out_idx_base = out_group_idx * 8;
-    int token_idx_base = token_group_idx * 4;
+    int l_out_idx = get_local_id(0);
+    int l_token_idx = get_local_id(1);
+    int l_flat_idx = l_token_idx * LOCAL_DIM_OUT + l_out_idx;
 
-    if (out_idx_base >= N || token_idx_base >= M) return;
+    int g_out_base = (get_group_id(0) * LOCAL_DIM_OUT + l_out_idx) * OUTPUTS_PER_THREAD;
+    int g_token_base = (get_group_id(1) * LOCAL_DIM_TOKEN + l_token_idx) * TOKENS_PER_THREAD;
 
-    float4 acc[4][8];
+    float acc[TOKENS_PER_THREAD][OUTPUTS_PER_THREAD];
 
-#pragma unroll
-    for (int t = 0; t < 4; ++t) {
-#pragma unroll
-        for (int c = 0; c < 8; ++c) {
+    #pragma unroll
+    for (int t = 0; t < TOKENS_PER_THREAD; ++t) {
+        #pragma unroll
+        for (int c = 0; c < OUTPUTS_PER_THREAD; ++c) {
             acc[t][c] = 0.0f;
         }
     }
 
-    int wt_base = out_idx_base * K;
-
-    for (int k = 0; k < K; k += 4) {
-        float4 w[8];
-
-#pragma unroll
-        for (int c = 0; c < 8; ++c) {
-            w[c] = vload4(0, &weights[wt_base + c * K + k]);
+    for (int k_curr = 0; k_curr < K; k_curr += TILE_K) {
+        #pragma unroll
+        for (int t = 0; t < TOKENS_PER_THREAD; ++t) {
+            int l_row = l_token_idx * TOKENS_PER_THREAD + t;
+            int g_row = g_token_base + t;
+            int k_offset = l_out_idx * 4;
+            
+            if (g_row < M && (k_curr + k_offset) < K) {
+                float4 val = vload4(0, &input[g_row * K + (k_curr + k_offset)]);
+                tile_input[l_row][k_offset + 0] = val.x;
+                tile_input[l_row][k_offset + 1] = val.y;
+                tile_input[l_row][k_offset + 2] = val.z;
+                tile_input[l_row][k_offset + 3] = val.w;
+            } else {
+                tile_input[l_row][k_offset + 0] = 0.0f;
+                tile_input[l_row][k_offset + 1] = 0.0f;
+                tile_input[l_row][k_offset + 2] = 0.0f;
+                tile_input[l_row][k_offset + 3] = 0.0f;
+            }
         }
 
-#pragma unroll
-        for (int t = 0; t < 4; ++t) {
-            int current_token_idx = token_idx_base + t;
+        int g_out_group_start = get_group_id(0) * LOCAL_DIM_OUT * OUTPUTS_PER_THREAD;
+        int tile_width_n = LOCAL_DIM_OUT * OUTPUTS_PER_THREAD;
 
-            if (current_token_idx < M) {
-                float4 in_val = vload4(0, &input[current_token_idx * K + k]);
+        #pragma unroll
+        for (int i = 0; i < 2; ++i) {
+            int load_idx = l_flat_idx * 2 + i;
+            int w_row_k = load_idx / tile_width_n;
+            int w_col_n = load_idx % tile_width_n;
 
-#pragma unroll
-                for (int c = 0; c < 8; ++c) {
-                    acc[t][c] = fma(in_val, w[c], acc[t][c]);
+            if ((k_curr + w_row_k) < K && (g_out_group_start + w_col_n) < N) {
+                tile_weights[w_row_k][w_col_n] = weights[(g_out_group_start + w_col_n) * K + (k_curr + w_row_k)];
+            } else {
+                tile_weights[w_row_k][w_col_n] = 0.0f;
+            }
+        }
+
+        barrier(CLK_LOCAL_MEM_FENCE);
+
+        for (int k = 0; k < TILE_K; ++k) {
+            float w_cache[OUTPUTS_PER_THREAD];
+            int l_col_base = l_out_idx * OUTPUTS_PER_THREAD;
+            
+            #pragma unroll
+            for (int c = 0; c < OUTPUTS_PER_THREAD; ++c) {
+                w_cache[c] = tile_weights[k][l_col_base + c];
+            }
+
+            #pragma unroll
+            for (int t = 0; t < TOKENS_PER_THREAD; ++t) {
+                int l_row = l_token_idx * TOKENS_PER_THREAD + t;
+                float in_val = tile_input[l_row][k];
+
+                #pragma unroll
+                for (int c = 0; c < OUTPUTS_PER_THREAD; ++c) {
+                    acc[t][c] = fma(in_val, w_cache[c], acc[t][c]);
                 }
             }
         }
+        barrier(CLK_LOCAL_MEM_FENCE);
     }
 
-    float4 b0 = vload4(0, &bias[out_idx_base + 0]);
-    float4 b1 = vload4(0, &bias[out_idx_base + 4]);
+    if (g_out_base >= N || g_token_base >= M) return;
 
-#pragma unroll
-    for (int t = 0; t < 4; ++t) {
-        int current_token_idx = token_idx_base + t;
+    float4 b0 = vload4(0, &bias[g_out_base + 0]);
+    float4 b1 = vload4(0, &bias[g_out_base + 4]);
 
-        if (current_token_idx < M) {
-            float sum[8];
-#pragma unroll
-            for (int c = 0; c < 8; ++c) {
-                sum[c] = acc[t][c].x + acc[t][c].y + acc[t][c].z + acc[t][c].w;
-            }
+    #pragma unroll
+    for (int t = 0; t < TOKENS_PER_THREAD; ++t) {
+        int curr_g_token = g_token_base + t;
 
-            float4 temp0 = (float4)(sum[0], sum[1], sum[2], sum[3]) + b0;
-            float4 temp1 = (float4)(sum[4], sum[5], sum[6], sum[7]) + b1;
+        if (curr_g_token < M) {
+            float4 res0 = gelu4((float4)(acc[t][0], acc[t][1], acc[t][2], acc[t][3]) + b0);
+            float4 res1 = gelu4((float4)(acc[t][4], acc[t][5], acc[t][6], acc[t][7]) + b1);
 
-            float4 res0 = (float4)(gelu(temp0.x), gelu(temp0.y), gelu(temp0.z), gelu(temp0.w));
-            float4 res1 = (float4)(gelu(temp1.x), gelu(temp1.y), gelu(temp1.z), gelu(temp1.w));
-
-            __global float* out_ptr = &output[current_token_idx * N + out_idx_base];
+            __global float* out_ptr = &output[curr_g_token * N + g_out_base];
             vstore4(res0, 0, out_ptr + 0);
             vstore4(res1, 0, out_ptr + 4);
         }
