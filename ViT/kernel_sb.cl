@@ -19,16 +19,17 @@ inline float4 gelu4(float4 x) {
     return 0.5f * x * (1.0f + erf);
 }
 
-inline void linear_layer(
+__kernel void linear_default(
     __global const float* input,
     __global float* output,
     __global const float* weights,
     __global const float* bias,
-    const int M, const int K, const int N,
-    __local float* tile_input_ptr,   
-    __local float* tile_weights_ptr, 
-    const int IS_PATCH,
-    const int USE_GELU ) {
+    const int M, 
+    const int K, 
+    const int N ) {
+
+    __local float tile_input[LI_LWS_TOKEN * LI_TPT][LI_STRIDE_IN];
+    __local float tile_weights[LI_TILE][LI_STRIDE_WEIGHT];
 
     int l_out_idx = get_local_id(0);
     int l_token_idx = get_local_id(1);
@@ -37,29 +38,6 @@ inline void linear_layer(
     int g_token_base = (get_group_id(1) * LI_LWS_TOKEN + l_token_idx) * LI_TPT;
 
     float acc[LI_TPT][LI_OPT];
-    int patch_base_addr[LI_TPT]; 
-
-    if (IS_PATCH) {
-        #pragma unroll
-        for (int t = 0; t < LI_TPT; ++t) {
-            int g_patch_idx = g_token_base + t;
-            if (g_patch_idx < M) {
-                int batch_idx = g_patch_idx / (OUTPUT_SIZE * OUTPUT_SIZE);
-                int idx_in_batch = g_patch_idx % (OUTPUT_SIZE * OUTPUT_SIZE);
-                
-                int patch_y = idx_in_batch / OUTPUT_SIZE;
-                int patch_x = idx_in_batch % OUTPUT_SIZE;
-
-                int global_y_base = (patch_y << 4); // patch_y * 16
-                int global_x_base = (patch_x << 4); // patch_x * 16
-                
-                patch_base_addr[t] = (batch_idx * 3) * (IMG_SIZE * IMG_SIZE) 
-                                     + global_y_base * IMG_SIZE + global_x_base;
-            } else {
-                patch_base_addr[t] = 0;
-            }
-        }
-    }
 
     #pragma unroll
     for (int t = 0; t < LI_TPT; ++t) {
@@ -68,48 +46,23 @@ inline void linear_layer(
     }
 
     for (int k_curr = 0; k_curr < K; k_curr += LI_TILE) {
-        
         #pragma unroll
         for (int t = 0; t < LI_TPT; ++t) {
-            int l_row = l_token_idx * LI_TPT + t; 
-            int g_row = g_token_base + t;         
-            int k_offset = l_out_idx * 4;         
-            int current_k = k_curr + k_offset;    
-
-            int l_idx = l_row * LI_STRIDE_IN + k_offset; 
-
-            if (g_row < M && current_k < K) {
-                int addr;
-                if (IS_PATCH) {
-                    // [최적화된 주소 계산]
-                    // 미리 구해둔 patch_base_addr[t]에 픽셀 오프셋만 더함
-                    
-                    int ch = current_k / (PATCH_SIZE * PATCH_SIZE);         // Channel (0~2)
-                    int rem_k = current_k & ((PATCH_SIZE * PATCH_SIZE) - 1); // Pixel Index in Patch (0~255)
-                    
-                    int py = rem_k >> 4;               // Row inside patch (0~15)
-                    int px = rem_k & (PATCH_SIZE - 1); // Col inside patch (0~15)
-
-                    // 최종 주소 = Base + (Ch Offset) + (Pixel Offset)
-                    addr = patch_base_addr[t] 
-                           + ch * (IMG_SIZE * IMG_SIZE) 
-                           + py * IMG_SIZE + px;
-                } else {
-                    // 일반 Linear
-                    addr = g_row * K + current_k;
-                }
-                
-                float4 val = vload4(0, &input[addr]);
-                
-                tile_input_ptr[l_idx + 0] = val.x;
-                tile_input_ptr[l_idx + 1] = val.y;
-                tile_input_ptr[l_idx + 2] = val.z;
-                tile_input_ptr[l_idx + 3] = val.w;
+            int l_row = l_token_idx * LI_TPT + t;
+            int g_row = g_token_base + t;
+            int k_offset = l_out_idx * 4;
+            
+            if (g_row < M && (k_curr + k_offset) < K) {
+                float4 val = vload4(0, &input[g_row * K + (k_curr + k_offset)]);
+                tile_input[l_row][k_offset + 0] = val.x;
+                tile_input[l_row][k_offset + 1] = val.y;
+                tile_input[l_row][k_offset + 2] = val.z;
+                tile_input[l_row][k_offset + 3] = val.w;
             } else {
-                tile_input_ptr[l_idx + 0] = 0.0f;
-                tile_input_ptr[l_idx + 1] = 0.0f;
-                tile_input_ptr[l_idx + 2] = 0.0f;
-                tile_input_ptr[l_idx + 3] = 0.0f;
+                tile_input[l_row][k_offset + 0] = 0.0f;
+                tile_input[l_row][k_offset + 1] = 0.0f;
+                tile_input[l_row][k_offset + 2] = 0.0f;
+                tile_input[l_row][k_offset + 3] = 0.0f;
             }
         }
 
@@ -118,38 +71,30 @@ inline void linear_layer(
 
         #pragma unroll
         for (int i = 0; i < 2; ++i) {
-            int l_flat_idx = l_token_idx * LI_LWS_OUT + l_out_idx;
-            int load_idx = l_flat_idx * 2 + i;
-            
-            int w_row_k = load_idx / tile_width_n; 
-            int w_col_n = load_idx % tile_width_n; 
-            
-            int l_idx = w_row_k * LI_STRIDE_WEIGHT + w_col_n;
+            int l_flat = l_token_idx * LI_LWS_OUT + l_out_idx;
+            int load_idx = l_flat * 2 + i;
+            int w_r = load_idx / tile_width_n;
+            int w_c = load_idx % tile_width_n;
 
-            if ((k_curr + w_row_k) < K && (g_out_group_start + w_col_n) < N) {
-                tile_weights_ptr[l_idx] = weights[(g_out_group_start + w_col_n) * K + (k_curr + w_row_k)];
+            if ((k_curr + w_r) < K && (g_out_group_start + w_c) < N) {
+                tile_weights[w_r][w_c] = weights[(g_out_group_start + w_c) * K + (k_curr + w_r)];
             } else {
-                tile_weights_ptr[l_idx] = 0.0f;
+                tile_weights[w_r][w_c] = 0.0f;
             }
         }
 
         barrier(CLK_LOCAL_MEM_FENCE);
 
-        // 3. Compute (Local -> Register)
+        // 3. Compute
         for (int k = 0; k < LI_TILE; ++k) {
             float w_cache[LI_OPT];
             int l_col_base = l_out_idx * LI_OPT;
-            
             #pragma unroll
-            for (int c = 0; c < LI_OPT; ++c) {
-                w_cache[c] = tile_weights_ptr[k * LI_STRIDE_WEIGHT + (l_col_base + c)];
-            }
-
+            for (int c = 0; c < LI_OPT; ++c) w_cache[c] = tile_weights[k][l_col_base + c];
             #pragma unroll
             for (int t = 0; t < LI_TPT; ++t) {
                 int l_row = l_token_idx * LI_TPT + t;
-                float in_val = tile_input_ptr[l_row * LI_STRIDE_IN + k];
-
+                float in_val = tile_input[l_row][k];
                 #pragma unroll
                 for (int c = 0; c < LI_OPT; ++c) {
                     acc[t][c] = fma(in_val, w_cache[c], acc[t][c]);
@@ -167,15 +112,9 @@ inline void linear_layer(
     #pragma unroll
     for (int t = 0; t < LI_TPT; ++t) {
         int curr_g_token = g_token_base + t;
-
         if (curr_g_token < M) {
             float4 res0 = (float4)(acc[t][0], acc[t][1], acc[t][2], acc[t][3]) + b0;
             float4 res1 = (float4)(acc[t][4], acc[t][5], acc[t][6], acc[t][7]) + b1;
-
-            if (USE_GELU) {
-                res0 = gelu4(res0);
-                res1 = gelu4(res1);
-            }
 
             __global float* out_ptr = &output[curr_g_token * N + g_out_base];
             vstore4(res0, 0, out_ptr + 0);
@@ -184,49 +123,245 @@ inline void linear_layer(
     }
 }
 
-__kernel void linear_default (
-    __global const float* input, 
-    __global float* output, 
-    __global const float* weights, 
-    __global const float* bias,
-    const int M,
-    const int K,
-    const int N ) {
-
-    __local float l_in[LI_LWS_TOKEN * LI_TPT * LI_STRIDE_IN];
-    __local float l_w[LI_TILE * LI_STRIDE_WEIGHT];
-    
-    linear_layer(input, output, weights, bias, M, K, N, l_in, l_w, 0, 0);
-}
-
-__kernel void linear_gelu (
+__kernel void linear_gelu(
     __global const float* input,
-    __global float* output, 
+    __global float* output,
     __global const float* weights,
     __global const float* bias,
-    const int M,
-    const int K, 
-    const int N ) {
-
-    __local float l_in[LI_LWS_TOKEN * LI_TPT * LI_STRIDE_IN];
-    __local float l_w[LI_TILE * LI_STRIDE_WEIGHT];
-    
-    linear_layer(input, output, weights, bias, M, K, N, l_in, l_w, 0, 1);
-}
-
-__kernel void linear_conv2d (
-    __global const float* input,
-    __global float* output, 
-    __global const float* weights,
-    __global const float* bias,
-    const int M,
+    const int M, 
     const int K, 
     const int N) {
 
-    __local float l_in[LI_LWS_TOKEN * LI_TPT * LI_STRIDE_IN];
-    __local float l_w[LI_TILE * LI_STRIDE_WEIGHT];
+    __local float tile_input[LI_LWS_TOKEN * LI_TPT][LI_STRIDE_IN];
+    __local float tile_weights[LI_TILE][LI_STRIDE_WEIGHT];
+
+    int l_out_idx = get_local_id(0);
+    int l_token_idx = get_local_id(1);
     
-    linear_layer(input, output, weights, bias, M, K, N, l_in, l_w, 1, 0);
+    int g_out_base = (get_group_id(0) * LI_LWS_OUT + l_out_idx) * LI_OPT;
+    int g_token_base = (get_group_id(1) * LI_LWS_TOKEN + l_token_idx) * LI_TPT;
+
+    float acc[LI_TPT][LI_OPT];
+
+    #pragma unroll
+    for (int t = 0; t < LI_TPT; ++t) {
+        #pragma unroll
+        for (int c = 0; c < LI_OPT; ++c) acc[t][c] = 0.0f;
+    }
+
+    for (int k_curr = 0; k_curr < K; k_curr += LI_TILE) {
+        #pragma unroll
+        for (int t = 0; t < LI_TPT; ++t) {
+            int l_row = l_token_idx * LI_TPT + t;
+            int g_row = g_token_base + t;
+            int k_offset = l_out_idx * 4;
+            
+            if (g_row < M && (k_curr + k_offset) < K) {
+                float4 val = vload4(0, &input[g_row * K + (k_curr + k_offset)]);
+                tile_input[l_row][k_offset + 0] = val.x;
+                tile_input[l_row][k_offset + 1] = val.y;
+                tile_input[l_row][k_offset + 2] = val.z;
+                tile_input[l_row][k_offset + 3] = val.w;
+            } else {
+                tile_input[l_row][k_offset + 0] = 0.0f;
+                tile_input[l_row][k_offset + 1] = 0.0f;
+                tile_input[l_row][k_offset + 2] = 0.0f;
+                tile_input[l_row][k_offset + 3] = 0.0f;
+            }
+        }
+
+        int g_out_group_start = get_group_id(0) * LI_LWS_OUT * LI_OPT;
+        int tile_width_n = LI_LWS_OUT * LI_OPT;
+
+        #pragma unroll
+        for (int i = 0; i < 2; ++i) {
+            int l_flat = l_token_idx * LI_LWS_OUT + l_out_idx;
+            int load_idx = l_flat * 2 + i;
+            int w_r = load_idx / tile_width_n;
+            int w_c = load_idx % tile_width_n;
+
+            if ((k_curr + w_r) < K && (g_out_group_start + w_c) < N) {
+                tile_weights[w_r][w_c] = weights[(g_out_group_start + w_c) * K + (k_curr + w_r)];
+            } else {
+                tile_weights[w_r][w_c] = 0.0f;
+            }
+        }
+
+        barrier(CLK_LOCAL_MEM_FENCE);
+
+        for (int k = 0; k < LI_TILE; ++k) {
+            float w_cache[LI_OPT];
+            int l_col_base = l_out_idx * LI_OPT;
+            #pragma unroll
+            for (int c = 0; c < LI_OPT; ++c) w_cache[c] = tile_weights[k][l_col_base + c];
+            #pragma unroll
+            for (int t = 0; t < LI_TPT; ++t) {
+                int l_row = l_token_idx * LI_TPT + t;
+                float in_val = tile_input[l_row][k];
+                #pragma unroll
+                for (int c = 0; c < LI_OPT; ++c) {
+                    acc[t][c] = fma(in_val, w_cache[c], acc[t][c]);
+                }
+            }
+        }
+        barrier(CLK_LOCAL_MEM_FENCE);
+    }
+
+    if (g_out_base >= N || g_token_base >= M) return;
+
+    float4 b0 = vload4(0, &bias[g_out_base + 0]);
+    float4 b1 = vload4(0, &bias[g_out_base + 4]);
+
+    #pragma unroll
+    for (int t = 0; t < LI_TPT; ++t) {
+        int curr_g_token = g_token_base + t;
+        if (curr_g_token < M) {
+            float4 res0 = (float4)(acc[t][0], acc[t][1], acc[t][2], acc[t][3]) + b0;
+            float4 res1 = (float4)(acc[t][4], acc[t][5], acc[t][6], acc[t][7]) + b1;
+
+            // [GELU]
+            res0 = gelu4(res0);
+            res1 = gelu4(res1);
+
+            __global float* out_ptr = &output[curr_g_token * N + g_out_base];
+            vstore4(res0, 0, out_ptr + 0);
+            vstore4(res1, 0, out_ptr + 4);
+        }
+    }
+}
+
+__kernel void linear_conv2d(
+    __global const float* input_img,
+    __global float* output,
+    __global const float* weights,
+    __global const float* bias,
+    const int M, 
+    const int K, 
+    const int N) {
+
+    __local float tile_input[LI_LWS_TOKEN * LI_TPT][LI_STRIDE_IN];
+    __local float tile_weights[LI_TILE][LI_STRIDE_WEIGHT];
+
+    int l_out_idx = get_local_id(0);
+    int l_token_idx = get_local_id(1);
+    
+    int g_out_base = (get_group_id(0) * LI_LWS_OUT + l_out_idx) * LI_OPT;
+    int g_token_base = (get_group_id(1) * LI_LWS_TOKEN + l_token_idx) * LI_TPT;
+
+    float acc[LI_TPT][LI_OPT];
+    int patch_base_addr[LI_TPT];
+    
+    #pragma unroll
+    for (int t = 0; t < LI_TPT; ++t) {
+        int g_patch_idx = g_token_base + t;
+        if (g_patch_idx < M) {
+            int batch_idx = g_patch_idx / (OUTPUT_SIZE * OUTPUT_SIZE);
+            int idx_in_batch = g_patch_idx % (OUTPUT_SIZE * OUTPUT_SIZE);
+            
+            int patch_y = idx_in_batch / OUTPUT_SIZE;
+            int patch_x = idx_in_batch % OUTPUT_SIZE;
+
+            int global_y_base = (patch_y << 4); // patch_y * 16
+            int global_x_base = (patch_x << 4); // patch_x * 16
+            
+            patch_base_addr[t] = (batch_idx * 3) * (IMG_SIZE * IMG_SIZE) 
+                                 + global_y_base * IMG_SIZE + global_x_base;
+        }
+    }
+
+    #pragma unroll
+    for (int t = 0; t < LI_TPT; ++t) {
+        #pragma unroll
+        for (int c = 0; c < LI_OPT; ++c) acc[t][c] = 0.0f;
+    }
+
+    for (int k_curr = 0; k_curr < K; k_curr += LI_TILE) {
+        #pragma unroll
+        for (int t = 0; t < LI_TPT; ++t) {
+            int l_row = l_token_idx * LI_TPT + t;
+            int g_row = g_token_base + t;
+            int k_offset = l_out_idx * 4;
+            int current_k = k_curr + k_offset;
+
+            if (g_row < M && current_k < K) {
+                int ch = current_k / (PATCH_SIZE * PATCH_SIZE);         
+                int rem_k = current_k & ((PATCH_SIZE * PATCH_SIZE) - 1); // 255
+                
+                int py = rem_k >> 4;               
+                int px = rem_k & (PATCH_SIZE - 1); 
+
+                int addr = patch_base_addr[t] 
+                           + ch * (IMG_SIZE * IMG_SIZE) 
+                           + py * IMG_SIZE + px;
+
+                float4 val = vload4(0, &input_img[addr]);
+                
+                tile_input[l_row][k_offset + 0] = val.x;
+                tile_input[l_row][k_offset + 1] = val.y;
+                tile_input[l_row][k_offset + 2] = val.z;
+                tile_input[l_row][k_offset + 3] = val.w;
+            } else {
+                tile_input[l_row][k_offset + 0] = 0.0f;
+                tile_input[l_row][k_offset + 1] = 0.0f;
+                tile_input[l_row][k_offset + 2] = 0.0f;
+                tile_input[l_row][k_offset + 3] = 0.0f;
+            }
+        }
+
+        int g_out_group_start = get_group_id(0) * LI_LWS_OUT * LI_OPT;
+        int tile_width_n = LI_LWS_OUT * LI_OPT;
+
+        #pragma unroll
+        for (int i = 0; i < 2; ++i) {
+            int l_flat = l_token_idx * LI_LWS_OUT + l_out_idx;
+            int load_idx = l_flat * 2 + i;
+            int w_r = load_idx / tile_width_n;
+            int w_c = load_idx % tile_width_n;
+
+            if ((k_curr + w_r) < K && (g_out_group_start + w_c) < N) {
+                tile_weights[w_r][w_c] = weights[(g_out_group_start + w_c) * K + (k_curr + w_r)];
+            } else {
+                tile_weights[w_r][w_c] = 0.0f;
+            }
+        }
+
+        barrier(CLK_LOCAL_MEM_FENCE);
+
+        for (int k = 0; k < LI_TILE; ++k) {
+            float w_cache[LI_OPT];
+            int l_col_base = l_out_idx * LI_OPT;
+            #pragma unroll
+            for (int c = 0; c < LI_OPT; ++c) w_cache[c] = tile_weights[k][l_col_base + c];
+            #pragma unroll
+            for (int t = 0; t < LI_TPT; ++t) {
+                int l_row = l_token_idx * LI_TPT + t;
+                float in_val = tile_input[l_row][k];
+                #pragma unroll
+                for (int c = 0; c < LI_OPT; ++c) {
+                    acc[t][c] = fma(in_val, w_cache[c], acc[t][c]);
+                }
+            }
+        }
+        barrier(CLK_LOCAL_MEM_FENCE);
+    }
+
+    if (g_out_base >= N || g_token_base >= M) return;
+
+    float4 b0 = vload4(0, &bias[g_out_base + 0]);
+    float4 b1 = vload4(0, &bias[g_out_base + 4]);
+
+    #pragma unroll
+    for (int t = 0; t < LI_TPT; ++t) {
+        int curr_g_token = g_token_base + t;
+        if (curr_g_token < M) {
+            float4 res0 = (float4)(acc[t][0], acc[t][1], acc[t][2], acc[t][3]) + b0;
+            float4 res1 = (float4)(acc[t][4], acc[t][5], acc[t][6], acc[t][7]) + b1;
+
+            __global float* out_ptr = &output[curr_g_token * N + g_out_base];
+            vstore4(res0, 0, out_ptr + 0);
+            vstore4(res1, 0, out_ptr + 4);
+        }
+    }
 }
 
 __kernel void attn_score(
