@@ -101,7 +101,7 @@ typedef struct __cl_context {
 
 static CLContext ctx = { 0 };
 
-static void linear_layer(cl_mem, cl_mem, int, int, int, cl_mem, cl_mem);
+static void linear_layer(cl_kernel, cl_mem, cl_mem, int, int, int, cl_mem, cl_mem);
 static void add(cl_mem, cl_mem, cl_mem, int);
 
 static void init_kernel(Network*);
@@ -111,68 +111,6 @@ static void set_size_1d(size_t*, int);
 static void set_size_2d(size_t*, int, int);
 static void set_size_3d(size_t*, int, int, int);
 static void padding_size(size_t*, const size_t*, int);
-
-////////////////////////////////////// ViT function //////////////////////////////////////
-
-//static void conv2d(cl_mem input, cl_mem output, cl_mem weight, cl_mem bias) {
-//    cl_int err;
-//
-//    err = clSetKernelArg(ctx.k_patch_embed, 0, sizeof(cl_mem), &input); CHECK_ERROR(err);
-//    err = clSetKernelArg(ctx.k_patch_embed, 1, sizeof(cl_mem), &output); CHECK_ERROR(err);
-//    err = clSetKernelArg(ctx.k_patch_embed, 2, sizeof(cl_mem), &weight); CHECK_ERROR(err);
-//    err = clSetKernelArg(ctx.k_patch_embed, 3, sizeof(cl_mem), &bias); CHECK_ERROR(err);
-//
-//    err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_patch_embed, 3, NULL,
-//        ctx.gws_patch, ctx.lws_patch, 0, NULL, ctx.evt_ptr);
-//    CHECK_ERROR(err);
-//
-//#ifdef PROFILE_MODE
-//    profile_event(*ctx.evt_ptr, "Conv2d");
-//#endif
-//}
-
-static void conv2d(cl_mem input, cl_mem output, cl_mem weight, cl_mem bias) {
-    cl_int err;
-
-    // 1. 차원 정의
-    // M: 전체 배치 내의 총 패치 개수 (Batch * 14 * 14)
-    int total_patches_m = batch_size * num_patches;
-    // K: 하나의 패치가 가진 픽셀 데이터 수 (3 * 16 * 16 = 768)
-    int patch_vol_k = in_chans * patch_size * patch_size;
-    // N: 임베딩 차원 (768)
-    int embed_n = embed_dim;
-
-    // 2. 커널 인자 설정 (총 7개)
-    // 주의: 커널 이름을 init_kernel에서 생성한 이름과 맞춰야 합니다 (예: ctx.k_patch_embed)
-    err = clSetKernelArg(ctx.k_patch_embed, 0, sizeof(cl_mem), &input);   CHECK_ERROR(err);
-    err = clSetKernelArg(ctx.k_patch_embed, 1, sizeof(cl_mem), &output);  CHECK_ERROR(err);
-    err = clSetKernelArg(ctx.k_patch_embed, 2, sizeof(cl_mem), &weight);  CHECK_ERROR(err);
-    err = clSetKernelArg(ctx.k_patch_embed, 3, sizeof(cl_mem), &bias);    CHECK_ERROR(err);
-    err = clSetKernelArg(ctx.k_patch_embed, 4, sizeof(int), &total_patches_m); CHECK_ERROR(err);
-    err = clSetKernelArg(ctx.k_patch_embed, 5, sizeof(int), &patch_vol_k);     CHECK_ERROR(err);
-    err = clSetKernelArg(ctx.k_patch_embed, 6, sizeof(int), &embed_n);         CHECK_ERROR(err);
-
-    // 3. Global Work Size 계산 (Linear 커널과 동일한 로직)
-    // Dim 0: Output Features (Embed Dim) 방향 -> li_opt 단위 처리
-    size_t gws_0 = (embed_n + li_opt - 1) / li_opt;
-    // Dim 1: Tokens (Patches) 방향 -> li_tpt 단위 처리
-    size_t gws_1 = (total_patches_m + li_tpt - 1) / li_tpt;
-
-    size_t gws[2] = { gws_0, gws_1 };
-
-    // 4. 패딩 (Local Size 배수에 맞춤)
-    // ctx.lws_linear는 {4, 64}로 설정되어 있어야 함
-    padding_size(gws, ctx.lws_linear, 2);
-
-    // 5. 실행 (2차원)
-    err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_patch_embed, 2, NULL,
-        gws, ctx.lws_linear, 0, NULL, ctx.evt_ptr);
-    CHECK_ERROR(err);
-
-#ifdef PROFILE_MODE
-    profile_event(*ctx.evt_ptr, "Conv2d (Fused Linear)");
-#endif
-}
 
 static void layer_norm(cl_mem input, cl_mem ouput, cl_mem weight, cl_mem bias) {
     cl_int err;
@@ -196,7 +134,7 @@ static void multihead_attn(cl_mem input, cl_mem output,
     cl_mem in_weight, cl_mem in_bias, cl_mem out_weight, cl_mem out_bias) {
 
     cl_int err;
-    linear_layer(input, ctx.d_qkv, total_tokens, embed_dim, qkv_dim, in_weight, in_bias);
+    linear_layer(ctx.k_linear, input, ctx.d_qkv, total_tokens, embed_dim, qkv_dim, in_weight, in_bias);
 
     err = clSetKernelArg(ctx.k_attn_score, 0, sizeof(cl_mem), &ctx.d_qkv); CHECK_ERROR(err);
     err = clSetKernelArg(ctx.k_attn_score, 1, sizeof(cl_mem), &ctx.d_attn_map); CHECK_ERROR(err);
@@ -245,53 +183,32 @@ static void multihead_attn(cl_mem input, cl_mem output,
     profile_event(*ctx.evt_ptr, "Context Vector");
 #endif
 
-    linear_layer(ctx.d_context_vec, output, total_tokens, embed_dim, embed_dim, out_weight, out_bias);
+    linear_layer(ctx.k_linear, ctx.d_context_vec, output, total_tokens, embed_dim, embed_dim, out_weight, out_bias);
 }
 
-static void linear_layer(cl_mem input, cl_mem output, int token_size, int in_features, int out_features, cl_mem weight, cl_mem bias) {
+static void linear_layer(cl_kernel kernel, cl_mem input, cl_mem output, int token_size, int in_features, int out_features, cl_mem weight, cl_mem bias) {
     cl_int err;
 
-    err = clSetKernelArg(ctx.k_linear, 0, sizeof(cl_mem), &input); CHECK_ERROR(err);
-    err = clSetKernelArg(ctx.k_linear, 1, sizeof(cl_mem), &output); CHECK_ERROR(err);
-    err = clSetKernelArg(ctx.k_linear, 2, sizeof(cl_mem), &weight); CHECK_ERROR(err);
-    err = clSetKernelArg(ctx.k_linear, 3, sizeof(cl_mem), &bias); CHECK_ERROR(err);
-    err = clSetKernelArg(ctx.k_linear, 4, sizeof(int), &token_size); CHECK_ERROR(err);
-    err = clSetKernelArg(ctx.k_linear, 5, sizeof(int), &in_features); CHECK_ERROR(err);
-    err = clSetKernelArg(ctx.k_linear, 6, sizeof(int), &out_features); CHECK_ERROR(err);
+    err = clSetKernelArg(kernel, 0, sizeof(cl_mem), &input); CHECK_ERROR(err);
+    err = clSetKernelArg(kernel, 1, sizeof(cl_mem), &output); CHECK_ERROR(err);
+    err = clSetKernelArg(kernel, 2, sizeof(cl_mem), &weight); CHECK_ERROR(err);
+    err = clSetKernelArg(kernel, 3, sizeof(cl_mem), &bias); CHECK_ERROR(err);
+    err = clSetKernelArg(kernel, 4, sizeof(int), &token_size); CHECK_ERROR(err);
+    err = clSetKernelArg(kernel, 5, sizeof(int), &in_features); CHECK_ERROR(err);
+    err = clSetKernelArg(kernel, 6, sizeof(int), &out_features); CHECK_ERROR(err);
 
-    size_t gws[2] = { (out_features + linear_factor - 1) / linear_factor, (token_size + linear_factor2 - 1) / linear_factor2 };
+    size_t gws[2] = { (out_features + li_opt - 1) / li_opt, (token_size + li_tpt - 1) / li_tpt };
     padding_size(gws, ctx.lws_linear, 2);
 
-    err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_linear, 2, NULL, gws, ctx.lws_linear, 0, NULL, ctx.evt_ptr); CHECK_ERROR(err);
+    err = clEnqueueNDRangeKernel(ctx.q_compute, kernel, 2, NULL, gws, ctx.lws_linear, 0, NULL, ctx.evt_ptr); CHECK_ERROR(err);
 #ifdef PROFILE_MODE
     profile_event(*ctx.evt_ptr, "Linear Layer");
 #endif
 }
 
-static void linear_gelu_layer(cl_mem input, cl_mem output, int token_size, int in_features, int out_features, cl_mem weight, cl_mem bias) {
-    cl_int err;
-
-    err = clSetKernelArg(ctx.k_linear_gelu, 0, sizeof(cl_mem), &input); CHECK_ERROR(err);
-    err = clSetKernelArg(ctx.k_linear_gelu, 1, sizeof(cl_mem), &output); CHECK_ERROR(err);
-    err = clSetKernelArg(ctx.k_linear_gelu, 2, sizeof(cl_mem), &weight); CHECK_ERROR(err);
-    err = clSetKernelArg(ctx.k_linear_gelu, 3, sizeof(cl_mem), &bias); CHECK_ERROR(err);
-    err = clSetKernelArg(ctx.k_linear_gelu, 4, sizeof(int), &token_size); CHECK_ERROR(err);
-    err = clSetKernelArg(ctx.k_linear_gelu, 5, sizeof(int), &in_features); CHECK_ERROR(err);
-    err = clSetKernelArg(ctx.k_linear_gelu, 6, sizeof(int), &out_features); CHECK_ERROR(err);
-
-    size_t gws[2] = { (out_features + linear_factor - 1) / linear_factor, (token_size + linear_factor2 - 1) / linear_factor2 };
-
-    padding_size(gws, ctx.lws_linear, 2);
-
-    err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_linear_gelu, 2, NULL, gws, ctx.lws_linear, 0, NULL, ctx.evt_ptr); CHECK_ERROR(err);
-#ifdef PROFILE_MODE
-    profile_event(*ctx.evt_ptr, "Linear-GELU Layer");
-#endif
-}
-
 static void mlp_block(cl_mem input, cl_mem output, cl_mem fc1_weight, cl_mem fc1_bias, cl_mem fc2_weight, cl_mem fc2_bias) {
-    linear_gelu_layer(input, ctx.d_mlp_tmp, total_tokens, embed_dim, hidden_dim, fc1_weight, fc1_bias);
-    linear_layer(ctx.d_mlp_tmp, output, total_tokens, hidden_dim, embed_dim, fc2_weight, fc2_bias);
+    linear_layer(ctx.k_linear_gelu, input, ctx.d_mlp_tmp, total_tokens, embed_dim, hidden_dim, fc1_weight, fc1_bias);
+    linear_layer(ctx.k_linear, ctx.d_mlp_tmp, output, total_tokens, hidden_dim, embed_dim, fc2_weight, fc2_bias);
 }
 
 static void Encoder(cl_mem input, cl_mem output,
@@ -527,7 +444,7 @@ void ViT_seq_sb(ImageData* image, Network* networks, float** probabilities) {
         clReleaseEvent(evt_input);
         evt_input = NULL;
 
-        conv2d(ctx.d_img, ctx.d_patch, ctx.d_networks[1], ctx.d_networks[2]);
+		linear_layer(ctx.k_patch_embed, ctx.d_img, ctx.d_patch, batch_size * num_patches, in_chans * patch_size * patch_size, embed_dim, ctx.d_networks[1], ctx.d_networks[2]);
 
         pos_embedding(ctx.d_patch, ctx.d_networks[0], ctx.d_networks[3], ctx.d_input_embed);
 
@@ -606,7 +523,7 @@ void ViT_seq_sb(ImageData* image, Network* networks, float** probabilities) {
         profile_event(*ctx.evt_ptr, "Extract CLS Token");
 #endif
 
-        linear_layer(ctx.d_cls_tokens, ctx.d_logits, batch_size, embed_dim, num_classes, ctx.d_networks[150], ctx.d_networks[151]);
+        linear_layer(ctx.k_linear, ctx.d_cls_tokens, ctx.d_logits, batch_size, embed_dim, num_classes, ctx.d_networks[150], ctx.d_networks[151]);
 
         int classes = num_classes;
         err = clSetKernelArg(ctx.k_softmax, 0, sizeof(cl_mem), &ctx.d_logits); CHECK_ERROR(err);
