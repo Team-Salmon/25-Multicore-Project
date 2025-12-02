@@ -85,7 +85,6 @@ __kernel void linear_default(
 
         barrier(CLK_LOCAL_MEM_FENCE);
 
-        // 3. Compute
         for (int k = 0; k < LI_TILE; ++k) {
             float w_cache[LI_OPT];
             int l_col_base = l_out_idx * LI_OPT;
