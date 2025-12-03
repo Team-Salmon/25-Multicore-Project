@@ -46,8 +46,8 @@ int main() {
     printf("=====================Start========================\n");
     start = clock();
     // Input here - 병렬처리 함수 작성
-	ViT_seq(images, network, probabilities);
-	// ViT_seq_sb(images, network, probabilities);
+	// ViT_seq(images, network, probabilities);
+	ViT_seq_sb(images, network, probabilities);
 	// ViT_seq_seoh(images, network, probabilities);
 	// ViT_seq_ZZani(images, network, probabilities);
     
