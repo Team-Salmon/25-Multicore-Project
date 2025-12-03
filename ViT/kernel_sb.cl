@@ -360,56 +360,80 @@ __kernel void linear_conv2d(
 }
 
 __kernel void attn_score(
-    __global const float* QKV,
-    __global float* scores) {
+    __global const float* restrict QKV,
+    __global float* restrict scores
+) {
+    int lid = get_local_id(0);
+    int lid_z = get_local_id(2);
 
-    int i = get_global_id(0);
-    int j = get_global_id(1);
+    int group_i = get_group_id(0);
+    int j_vec = get_global_id(1);
     int z = get_global_id(2);
+
+    __local float4 k_cache[256];
+    int cache_offset = lid_z * 64;
+
+    if (z >= BATCH_SIZE * NUM_HEADS) return;
+
+    int i = group_i * 64 + lid;
+    int j_start = j_vec * 4;
 
     int batch_idx = z / NUM_HEADS;
     int head_idx = z % NUM_HEADS;
-    int j_start = j * 4;
-
-    if (i >= TOKENS || j_start >= TOKENS || batch_idx >= BATCH_SIZE) return;
-
     int head_offset = head_idx * HEAD_DIM;
-    int q_offset_base = (batch_idx * TOKENS + i) * QKV_DIM + head_offset;
-    int k_chunk_base = (batch_idx * TOKENS) * QKV_DIM + EMBED_DIM + head_offset;
+    int batch_token_base = batch_idx * TOKENS * QKV_DIM;
 
-    bool has_1 = (j_start + 1 < TOKENS);
-    bool has_2 = (j_start + 2 < TOKENS);
-    bool has_3 = (j_start + 3 < TOKENS);
+    int k_base_offset = batch_token_base + EMBED_DIM + head_offset;
 
-    int k_addr_0 = k_chunk_base + (j_start + 0) * QKV_DIM;
+    int vec_per_key = HEAD_DIM / 4;
+    int key_idx = lid / vec_per_key;
+    int d_vec = lid % vec_per_key;
 
-    int k_addr_1 = (has_1) ? (k_chunk_base + (j_start + 1) * QKV_DIM) : k_addr_0;
-    int k_addr_2 = (has_2) ? (k_chunk_base + (j_start + 2) * QKV_DIM) : k_addr_0;
-    int k_addr_3 = (has_3) ? (k_chunk_base + (j_start + 3) * QKV_DIM) : k_addr_0;;
+    int curr_j = j_start + key_idx;
+    float4 loaded_k = (float4)(0.0f);
 
-    float sum0 = 0.0f;
-    float sum1 = 0.0f;
-    float sum2 = 0.0f;
-    float sum3 = 0.0f;
-
-    for (int d = 0; d < HEAD_DIM; d += 4) {
-        float4 q_vec = vload4(0, &QKV[q_offset_base + d]);
-
-        sum0 += dot(q_vec, vload4(0, &QKV[k_addr_0 + d]));
-
-        if (has_1) sum1 += dot(q_vec, vload4(0, &QKV[k_addr_1 + d]));
-        if (has_2) sum2 += dot(q_vec, vload4(0, &QKV[k_addr_2 + d]));
-        if (has_3) sum3 += dot(q_vec, vload4(0, &QKV[k_addr_3 + d]));
+    if (curr_j < TOKENS && key_idx < 4) {
+        int addr = k_base_offset + (curr_j * QKV_DIM) + (d_vec * 4);
+        loaded_k = vload4(0, &QKV[addr]);
     }
 
-    float scale = 0.125f;
-    int out_base = (batch_idx * NUM_HEADS + head_idx) * (TOKENS * TOKENS) + (i * TOKENS + j_start);
+    k_cache[cache_offset + lid] = loaded_k;
 
-    scores[out_base + 0] = sum0 * scale;
-    if (has_1) scores[out_base + 1] = sum1 * scale;
-    if (has_2) scores[out_base + 2] = sum2 * scale;
-    if (has_3) scores[out_base + 3] = sum3 * scale;
+    barrier(CLK_LOCAL_MEM_FENCE);
+
+    if (i < TOKENS) {
+        int q_addr = batch_token_base + (i * QKV_DIM) + head_offset;
+        float4 sum = (float4)(0.0f);
+
+#pragma unroll
+        for (int d = 0; d < vec_per_key; ++d) {
+            float4 q_vec = vload4(0, &QKV[q_addr + d * 4]);
+
+            float4 k0 = k_cache[cache_offset + 0 * vec_per_key + d];
+            float4 k1 = k_cache[cache_offset + 1 * vec_per_key + d];
+            float4 k2 = k_cache[cache_offset + 2 * vec_per_key + d];
+            float4 k3 = k_cache[cache_offset + 3 * vec_per_key + d];
+
+            sum.x += dot(q_vec, k0);
+            sum.y += dot(q_vec, k1);
+            sum.z += dot(q_vec, k2);
+            sum.w += dot(q_vec, k3);
+        }
+        sum *= 0.125f;
+
+        int out_base = (batch_idx * NUM_HEADS + head_idx) * (TOKENS * TOKENS) + (i * TOKENS + j_start);
+
+#if (TOKENS % 4 == 0)
+        vstore4(sum, 0, &scores[out_base]);
+#else
+        if (j_start < TOKENS) scores[out_base] = sum.x;
+        if (j_start + 1 < TOKENS) scores[out_base + 1] = sum.y;
+        if (j_start + 2 < TOKENS) scores[out_base + 2] = sum.z;
+        if (j_start + 3 < TOKENS) scores[out_base + 3] = sum.w;
+#endif
+    }
 }
+
 
 __kernel void softmax(
     __global float* scores,
