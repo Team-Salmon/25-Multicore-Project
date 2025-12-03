@@ -45,7 +45,7 @@
 
 #define enc_size tokens * embed_dim
 
-#define PROFILE_MODE
+// #define PROFILE_MODE
 
 typedef struct __cl_context {
     cl_platform_id platform;
@@ -276,8 +276,31 @@ static void init_kernel(Network* networks) {
         0
     };
 
-    ctx.q_input = clCreateCommandQueueWithProperties(ctx.context, ctx.device, props, &err); CHECK_ERROR(err);
     ctx.q_compute = clCreateCommandQueueWithProperties(ctx.context, ctx.device, props, &err); CHECK_ERROR(err);
+
+    for (int i = 0; i < 152; i++) {
+        if (networks[i].data == NULL) continue;
+        if (networks[i].size <= 0) continue;
+
+        ctx.d_networks[i] = clCreateBuffer(ctx.context,
+            CL_MEM_READ_ONLY,
+            sizeof(float) * networks[i].size,
+            NULL,
+            &err);
+
+        CHECK_ERROR(err);
+
+        err = clEnqueueWriteBuffer(ctx.q_compute,
+            ctx.d_networks[i],
+            CL_FALSE,
+            0,
+            sizeof(float) * networks[i].size,
+            networks[i].data,
+            0, NULL, NULL);
+        CHECK_ERROR(err);
+    }
+
+    ctx.q_input = clCreateCommandQueueWithProperties(ctx.context, ctx.device, props, &err); CHECK_ERROR(err);
 
     size_t kernel_source_size;
     char* kernel_source = get_source_code("kernel_sb.cl", &kernel_source_size);
@@ -328,19 +351,6 @@ static void init_kernel(Network* networks) {
 
     err = clBuildProgram(ctx.program, 1, &ctx.device, build_options, NULL, NULL);
     build_error(ctx.program, ctx.device, err); CHECK_ERROR(err);
-
-    for (int i = 0; i < 152; i++) {
-        if (networks[i].data == NULL) continue;
-        if (networks[i].size <= 0) continue;
-
-        ctx.d_networks[i] = clCreateBuffer(ctx.context,
-            CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-            sizeof(float) * networks[i].size,
-            networks[i].data,
-            &err);
-
-        CHECK_ERROR(err);
-    }
 
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
     // Create Kernels

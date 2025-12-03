@@ -216,7 +216,6 @@ __kernel void linear_gelu(
             float4 res0 = (float4)(acc[t][0], acc[t][1], acc[t][2], acc[t][3]) + b0;
             float4 res1 = (float4)(acc[t][4], acc[t][5], acc[t][6], acc[t][7]) + b1;
 
-            // [GELU]
             res0 = gelu4(res0);
             res1 = gelu4(res1);
 
@@ -258,10 +257,10 @@ __kernel void linear_conv2d(
             int patch_y = idx_in_batch / OUTPUT_SIZE;
             int patch_x = idx_in_batch % OUTPUT_SIZE;
 
-            int global_y_base = (patch_y << 4); // patch_y * 16
-            int global_x_base = (patch_x << 4); // patch_x * 16
+            int global_y_base = (patch_y << 4);
+            int global_x_base = (patch_x << 4);
             
-            patch_base_addr[t] = (batch_idx * 3) * (IMG_SIZE * IMG_SIZE) 
+            patch_base_addr[t] = (batch_idx * CHANNELS) * (IMG_SIZE * IMG_SIZE) 
                                  + global_y_base * IMG_SIZE + global_x_base;
         }
     }
@@ -282,7 +281,7 @@ __kernel void linear_conv2d(
 
             if (g_row < M && current_k < K) {
                 int ch = current_k / (PATCH_SIZE * PATCH_SIZE);         
-                int rem_k = current_k & ((PATCH_SIZE * PATCH_SIZE) - 1); // 255
+                int rem_k = current_k & ((PATCH_SIZE * PATCH_SIZE) - 1);
                 
                 int py = rem_k >> 4;               
                 int px = rem_k & (PATCH_SIZE - 1); 
