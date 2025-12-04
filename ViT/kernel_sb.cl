@@ -147,7 +147,7 @@ __kernel void linear_default(
     const int K, 
     const int N ) {
 
-    __local float local_input[LI_STRIDE_IN][LI_LWS_TOKEN * LI_TPT];
+    __local float local_input[LI_STRIDE_IN][LI_LWS_TOKEN * LI_TPT + 4];
     __local float local_weights[LI_TILE][LI_STRIDE_WEIGHT];
 
     int l_out_idx = get_local_id(0);
