@@ -431,7 +431,7 @@ void ViT_seq_sb(ImageData* image, Network* networks, float** probabilities) {
     cl_mem d_probs = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE, probs_bytes, NULL, &err); CHECK_ERROR(err);
 
     for (int i = 0; i < image->n; i += batch_size) {
-        steps = i % 2;
+        steps = (i / batch_size) % 2;
 
         if (evt_done[steps] != NULL) { // double buffering
             clWaitForEvents(1, &evt_done[steps]);
