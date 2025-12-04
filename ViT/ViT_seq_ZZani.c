@@ -154,13 +154,17 @@ static void multihead_attn(cl_mem input, cl_mem output,
 
     // Softmax ���
 
-    int token_size = tokens;
+    int attn_rows = batch_size * num_heads * tokens;
+    int attn_cols = tokens;
+
     err = clSetKernelArg(ctx.k_softmax, 0, sizeof(cl_mem), &ctx.d_attn_map); CHECK_ERROR(err);
-    err = clSetKernelArg(ctx.k_softmax, 1, sizeof(int), &token_size); CHECK_ERROR(err);
+    err = clSetKernelArg(ctx.k_softmax, 1, sizeof(int), &attn_cols); CHECK_ERROR(err);
+    err = clSetKernelArg(ctx.k_softmax, 2, sizeof(int), &attn_rows); CHECK_ERROR(err);
 
-    size_t gws_softmax = (size_t)tokens * batch_size * num_heads;
+    size_t lws_softmax = 256;
+    size_t gws_softmax = (size_t)attn_rows * lws_softmax;
 
-    err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_softmax, 1, NULL, &gws_softmax, NULL, 0, NULL, ctx.evt_ptr); CHECK_ERROR(err);
+    err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_softmax, 1, NULL, &gws_softmax, &lws_softmax, 0, NULL, ctx.evt_ptr); CHECK_ERROR(err);
 #ifdef PROFILE_MODE
     profile_event(*ctx.evt_ptr, "Softmax");
 #endif
@@ -526,13 +530,18 @@ void ViT_seq_ZZani(ImageData* image, Network* networks, float** probabilities) {
 
         linear_layer(ctx.k_linear, ctx.d_cls_tokens, ctx.d_logits, batch_size, embed_dim, num_classes, ctx.d_networks[150], ctx.d_networks[151]);
 
-        int classes = num_classes;
+        int out_rows = current_batch_size;
+        int out_cols = num_classes;
+
         err = clSetKernelArg(ctx.k_softmax, 0, sizeof(cl_mem), &ctx.d_logits); CHECK_ERROR(err);
-        err = clSetKernelArg(ctx.k_softmax, 1, sizeof(int), &classes); CHECK_ERROR(err);
+        err = clSetKernelArg(ctx.k_softmax, 1, sizeof(int), &out_cols); CHECK_ERROR(err);
+        err = clSetKernelArg(ctx.k_softmax, 2, sizeof(int), &out_rows); CHECK_ERROR(err);
 
-        size_t gws_softmax = current_batch_size;
+        size_t lws_out_softmax = 256;
+        size_t gws_out_softmax = (size_t)out_rows * lws_out_softmax;
+        if (gws_out_softmax == 0) gws_out_softmax = 256;
 
-        err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_softmax, 1, NULL, &gws_softmax, NULL, 0, NULL, ctx.evt_ptr); CHECK_ERROR(err);
+        err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_softmax, 1, NULL, &gws_out_softmax, &lws_out_softmax, 0, NULL, ctx.evt_ptr); CHECK_ERROR(err);
 #ifdef PROFILE_MODE
         profile_event(*ctx.evt_ptr, "Output Softmax");
 #endif
