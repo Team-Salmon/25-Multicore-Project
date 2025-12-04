@@ -37,12 +37,12 @@ __kernel void linear_default(
     int g_out_base = (get_group_id(0) * LI_LWS_OUT + l_out_idx) * LI_OPT;
     int g_token_base = (get_group_id(1) * LI_LWS_TOKEN + l_token_idx) * LI_TPT;
 
-    float acc[LI_TPT][LI_OPT];
+    float4 acc[LI_TPT][2];
 
     #pragma unroll
     for (int t = 0; t < LI_TPT; ++t) {
-        #pragma unroll
-        for (int c = 0; c < LI_OPT; ++c) acc[t][c] = 0.0f;
+        acc[t][0] = (float4)0.0f;
+        acc[t][1] = (float4)0.0f;
     }
 
     for (int k_curr = 0; k_curr < K; k_curr += LI_TILE) {
@@ -52,18 +52,15 @@ __kernel void linear_default(
             int g_row = g_token_base + t;
             int k_offset = l_out_idx * 4;
             
+            float4 val = (float4)0.0f;
             if (g_row < M && (k_curr + k_offset) < K) {
-                float4 val = vload4(0, &input[g_row * K + (k_curr + k_offset)]);
-                tile_input[l_row][k_offset + 0] = val.x;
-                tile_input[l_row][k_offset + 1] = val.y;
-                tile_input[l_row][k_offset + 2] = val.z;
-                tile_input[l_row][k_offset + 3] = val.w;
-            } else {
-                tile_input[l_row][k_offset + 0] = 0.0f;
-                tile_input[l_row][k_offset + 1] = 0.0f;
-                tile_input[l_row][k_offset + 2] = 0.0f;
-                tile_input[l_row][k_offset + 3] = 0.0f;
+                val = vload4(0, &input[g_row * K + (k_curr + k_offset)]);
             }
+
+            tile_input[l_row][k_offset + 0] = val.x;
+            tile_input[l_row][k_offset + 1] = val.y;
+            tile_input[l_row][k_offset + 2] = val.z;
+            tile_input[l_row][k_offset + 3] = val.w;
         }
 
         int g_out_group_start = get_group_id(0) * LI_LWS_OUT * LI_OPT;
@@ -85,18 +82,29 @@ __kernel void linear_default(
         barrier(CLK_LOCAL_MEM_FENCE);
 
         for (int k = 0; k < LI_TILE; ++k) {
-            float w_cache[LI_OPT];
             int l_col_base = l_out_idx * LI_OPT;
-            #pragma unroll
-            for (int c = 0; c < LI_OPT; ++c) w_cache[c] = tile_weights[k][l_col_base + c];
+            
+            float4 w_vec0 = (float4)(
+                tile_weights[k][l_col_base + 0],
+                tile_weights[k][l_col_base + 1],
+                tile_weights[k][l_col_base + 2],
+                tile_weights[k][l_col_base + 3]
+            );
+
+            float4 w_vec1 = (float4)(
+                tile_weights[k][l_col_base + 4],
+                tile_weights[k][l_col_base + 5],
+                tile_weights[k][l_col_base + 6],
+                tile_weights[k][l_col_base + 7]
+            );
+
             #pragma unroll
             for (int t = 0; t < LI_TPT; ++t) {
                 int l_row = l_token_idx * LI_TPT + t;
-                float in_val = tile_input[l_row][k];
-                #pragma unroll
-                for (int c = 0; c < LI_OPT; ++c) {
-                    acc[t][c] = fma(in_val, w_cache[c], acc[t][c]);
-                }
+                float in_val = tile_input[l_row][k]; 
+                
+                acc[t][0] = fma((float4)in_val, w_vec0, acc[t][0]);
+                acc[t][1] = fma((float4)in_val, w_vec1, acc[t][1]);
             }
         }
         barrier(CLK_LOCAL_MEM_FENCE);
@@ -111,8 +119,8 @@ __kernel void linear_default(
     for (int t = 0; t < LI_TPT; ++t) {
         int curr_g_token = g_token_base + t;
         if (curr_g_token < M) {
-            float4 res0 = (float4)(acc[t][0], acc[t][1], acc[t][2], acc[t][3]) + b0;
-            float4 res1 = (float4)(acc[t][4], acc[t][5], acc[t][6], acc[t][7]) + b1;
+            float4 res0 = acc[t][0] + b0;
+            float4 res1 = acc[t][1] + b1;
 
             __global float* out_ptr = &output[curr_g_token * N + g_out_base];
             vstore4(res0, 0, out_ptr + 0);
