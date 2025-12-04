@@ -175,7 +175,7 @@ err = clSetKernelArg(ctx.k_attn_context, 0, sizeof(cl_mem), &ctx.d_attn_map); CH
     err = clSetKernelArg(ctx.k_attn_context, 1, sizeof(cl_mem), &ctx.d_qkv); CHECK_ERROR(err);
     err = clSetKernelArg(ctx.k_attn_context, 2, sizeof(cl_mem), &ctx.d_context_vec); CHECK_ERROR(err);
 
-    size_t lws_context[3] = { 8, 16, 1 };
+    size_t lws_context[3] = { 4, 16, 1 };
     size_t gws_context[3] = {
         (size_t)((tokens + 3) / 4),
         (size_t)head_dim / 4,
@@ -654,6 +654,7 @@ static void release_kernel() {
     clReleaseCommandQueue(ctx.q_compute);
 
     clReleaseContext(ctx.context);
+	clReleaseCommandQueue(ctx.q_transfer);
 }
 
 
