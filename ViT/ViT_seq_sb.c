@@ -169,9 +169,9 @@ static void multihead_attn(cl_mem input, cl_mem output,
     err = clSetKernelArg(ctx.k_attn_context, 1, sizeof(cl_mem), &ctx.d_qkv); CHECK_ERROR(err);
     err = clSetKernelArg(ctx.k_attn_context, 2, sizeof(cl_mem), &ctx.d_context_vec); CHECK_ERROR(err);
 
-    size_t lws_context[3] = { 32, 16, 1 };
+    size_t lws_context[3] = { 8, 16, 1 };
     size_t gws_context[3] = {
-        (size_t)tokens,
+        (size_t)((tokens + 3) / 4),
         (size_t)head_dim / 4,
         (size_t)batch_size * num_heads
     };

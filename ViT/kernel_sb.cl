@@ -454,35 +454,72 @@ __kernel void softmax(
 __kernel void attn_context(
     __global const float* scores,
     __global const float* QKV,
-    __global float* attn_out) {
+    __global float* attn_out
+) {
+    const int g_row_block = get_global_id(0);
+    const int g_dim_idx = get_global_id(1);
+    const int g_batch_head_idx = get_global_id(2);
 
-    int i = get_global_id(0);
-    int d = get_global_id(1);
-    int z = get_global_id(2);
+    const int row_base = g_row_block << 2;
 
-    int d_start = d * 4;
-    int batch_idx = z / NUM_HEADS;
-    int head_idx = z % NUM_HEADS;
+    if (row_base >= TOKENS) return;
 
-    if (i >= TOKENS || d >= HEAD_DIM || batch_idx >= BATCH_SIZE) return;
+    const int batch_idx = g_batch_head_idx / NUM_HEADS;
+    const int head_idx = g_batch_head_idx % NUM_HEADS;
 
-    int score_base = (batch_idx * NUM_HEADS + head_idx) * (TOKENS * TOKENS) + i * TOKENS;
-    int v_base_offset = 2 * EMBED_DIM + head_idx * HEAD_DIM + d_start;
-    int qkv_batch_base = batch_idx * TOKENS * QKV_DIM;
+    const int d_offset = g_dim_idx << 2;
+    const int head_dim_offset = head_idx * HEAD_DIM;
+    const int batch_offset = batch_idx * TOKENS;
 
-    float4 sum = (float4)(0.0f);
+    const int score_head_offset = g_batch_head_idx * TOKENS * TOKENS;
+    const __global float* s_ptr_base = scores + score_head_offset + row_base * TOKENS;
+
+    const int qkv_base = batch_offset * QKV_DIM;
+    const int v_offset = (EMBED_DIM << 1) + head_dim_offset + d_offset;
+    const __global float* v_ptr = QKV + qkv_base + v_offset;
+
+    float4 acc0 = (float4)(0.0f);
+    float4 acc1 = (float4)(0.0f);
+    float4 acc2 = (float4)(0.0f);
+    float4 acc3 = (float4)(0.0f);
+
+    const __global float* s_ptr0 = s_ptr_base;
+    const __global float* s_ptr1 = s_ptr_base + TOKENS;
+    const __global float* s_ptr2 = s_ptr_base + (TOKENS << 1);
+    const __global float* s_ptr3 = s_ptr_base + (TOKENS * 3);
+
+    const bool r1_valid = (row_base + 1 < TOKENS);
+    const bool r2_valid = (row_base + 2 < TOKENS);
+    const bool r3_valid = (row_base + 3 < TOKENS);
 
     for (int j = 0; j < TOKENS; ++j) {
-        float s = scores[score_base + j];
+        float4 v_val = vload4(0, v_ptr);
+        v_ptr += QKV_DIM;
 
-        int v_idx = qkv_batch_base + j * QKV_DIM + v_base_offset;
-        float4 v = vload4(0, &QKV[v_idx]);
+        float s0 = *s_ptr0++;
+        acc0 = fma(v_val, (float4)(s0), acc0);
 
-        sum += s * v;
+        if (r1_valid) {
+            float s1 = *s_ptr1++;
+            acc1 = fma(v_val, (float4)(s1), acc1);
+        }
+        if (r2_valid) {
+            float s2 = *s_ptr2++;
+            acc2 = fma(v_val, (float4)(s2), acc2);
+        }
+        if (r3_valid) {
+            float s3 = *s_ptr3++;
+            acc3 = fma(v_val, (float4)(s3), acc3);
+        }
     }
 
-    int out_idx = (batch_idx * TOKENS + i) * EMBED_DIM + (head_idx * HEAD_DIM + d_start);
-    vstore4(sum, 0, &attn_out[out_idx]);
+    const int out_base = (batch_offset + row_base) * EMBED_DIM + head_dim_offset + d_offset;
+    __global float* out_ptr = attn_out + out_base;
+
+    vstore4(acc0, 0, out_ptr);
+    if (r1_valid) vstore4(acc1, 0, out_ptr + EMBED_DIM);
+    if (r2_valid) vstore4(acc2, 0, out_ptr + (EMBED_DIM << 1));
+    if (r3_valid) vstore4(acc3, 0, out_ptr + (EMBED_DIM * 3));
 }
 
 __kernel void layer_norm(
