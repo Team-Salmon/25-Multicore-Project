@@ -48,22 +48,29 @@ inline void gemm (
     float acc[LI_TPT][LI_OPT],
     int l_token_idx, int l_out_idx) {
 
+    float4* acc_vec_ptr;
+
     for (int k = 0; k < LI_TILE; ++k) {
-        float w_cache[LI_OPT];
-        int l_col_base = l_out_idx * LI_OPT;
+        __local float* w_ptr = &tile_weights[k][l_out_idx * LI_OPT];
         
-        #pragma unroll
-        for (int c = 0; c < LI_OPT; ++c) w_cache[c] = tile_weights[k][l_col_base + c];
+        float4 w0 = vload4(0, w_ptr);      // 0~3
+        float4 w1 = vload4(1, w_ptr);      // 4~7
+        float4 w2 = vload4(2, w_ptr);      // 8~11
+        float4 w3 = vload4(3, w_ptr);      // 12~15
 
         #pragma unroll
         for (int t = 0; t < LI_TPT; ++t) {
             int l_row = l_token_idx * LI_TPT + t;
-            float in_val = tile_input[l_row][k];
             
-            #pragma unroll
-            for (int c = 0; c < LI_OPT; ++c) {
-                acc[t][c] = fma(in_val, w_cache[c], acc[t][c]);
-            }
+            float in_val_scalar = tile_input[l_row][k];
+            float4 in_val = (float4)(in_val_scalar);
+
+            acc_vec_ptr = (float4*)&acc[t][0];
+
+            acc_vec_ptr[0] = fma(in_val, w0, acc_vec_ptr[0]);
+            acc_vec_ptr[1] = fma(in_val, w1, acc_vec_ptr[1]);
+            acc_vec_ptr[2] = fma(in_val, w2, acc_vec_ptr[2]);
+            acc_vec_ptr[3] = fma(in_val, w3, acc_vec_ptr[3]);
         }
     }
 }
