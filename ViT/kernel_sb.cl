@@ -28,18 +28,23 @@ inline void load_weights (
     int l_token_idx, 
     int l_out_idx ) {
 
-    #pragma unroll
-    for (int i = 0; i < 4; ++i) {
-        int load_idx = l_flat * 4 + i;
-        int w_r = load_idx & (LI_TILE - 1);
-        int w_c = load_idx >> 4;
+    int row_in_tile = l_flat >> 2;
+    int col_chunk_idx = l_flat & 3;
+    int col_in_tile = col_chunk_idx << 2;
 
-        if ((k_curr + w_r) < K && (g_out_group_start + w_c) < N) {
-            tile_weights[w_r][w_c] = weights[(g_out_group_start + w_c) * K + (k_curr + w_r)];
-        } else {
-            tile_weights[w_r][w_c] = 0.0f;
-        }
+    int global_row = g_out_group_start + row_in_tile;
+    int global_col = k_curr + col_in_tile;
+
+    float4 val = (float4)(0.0f);
+    
+    if (global_row < N && global_col < K) {
+        val = vload4(0, &weights[global_row * K + global_col]);
     }
+
+    tile_weights[col_in_tile + 0][row_in_tile] = val.x;
+    tile_weights[col_in_tile + 1][row_in_tile] = val.y;
+    tile_weights[col_in_tile + 2][row_in_tile] = val.z;
+    tile_weights[col_in_tile + 3][row_in_tile] = val.w;
 }
 
 inline void gemm (
@@ -53,10 +58,10 @@ inline void gemm (
     for (int k = 0; k < LI_TILE; ++k) {
         __local float* w_ptr = &tile_weights[k][l_out_idx * LI_OPT];
         
-        float4 w0 = vload4(0, w_ptr);      // 0~3
-        float4 w1 = vload4(1, w_ptr);      // 4~7
-        float4 w2 = vload4(2, w_ptr);      // 8~11
-        float4 w3 = vload4(3, w_ptr);      // 12~15
+        float4 w0 = vload4(0, w_ptr);
+        float4 w1 = vload4(1, w_ptr);
+        float4 w2 = vload4(2, w_ptr);
+        float4 w3 = vload4(3, w_ptr);
 
         #pragma unroll
         for (int t = 0; t < LI_TPT; ++t) {

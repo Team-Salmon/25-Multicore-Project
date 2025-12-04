@@ -579,7 +579,7 @@ void ViT_seq_sb(ImageData* image, Network* networks, float** probabilities) {
 #ifdef PROFILE_MODE
         profile_event(evt_done[steps], "Copy Data");
 #endif
-        // break; // for test purpose, process only one batch
+        //break; // for test purpose, process only one batch
     }
 
     if (evt_done[steps]) {
