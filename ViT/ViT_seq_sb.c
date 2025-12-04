@@ -202,7 +202,9 @@ static void linear_layer(cl_kernel kernel, cl_mem input, cl_mem output, int toke
 
     err = clEnqueueNDRangeKernel(ctx.q_compute, kernel, 2, NULL, gws, ctx.lws_linear, 0, NULL, ctx.evt_ptr); CHECK_ERROR(err);
 #ifdef PROFILE_MODE
-    profile_event(*ctx.evt_ptr, "Linear Layer");
+    if (kernel == ctx.k_linear) profile_event(*ctx.evt_ptr, "Linear Layer");
+	else if (kernel == ctx.k_linear_gelu) profile_event(*ctx.evt_ptr, "Linear Layer + GELU");
+	else if (kernel == ctx.k_patch_embed) profile_event(*ctx.evt_ptr, "Patch Embedding");
 #endif
 }
 
