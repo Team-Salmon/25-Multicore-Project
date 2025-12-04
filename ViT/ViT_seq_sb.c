@@ -27,12 +27,10 @@
 #define li_lws_out 4
 #define li_lws_token 64
 #define li_tpt 4 // tokens per thread
-#define li_opt 8 // output per thread
+#define li_opt 16 // output per thread
 #define li_tile 16
 #define li_stride_in 17
-#define li_stride_weight 33
-
-#define dfl_ls 256 // default local size
+#define li_stride_weight 65
 
 #define output_size img_size / patch_size
 #define num_patches output_size * output_size
