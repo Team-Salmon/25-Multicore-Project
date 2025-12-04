@@ -23,8 +23,6 @@
 
 // custom defines
 #define batch_size 8
-#define linear_factor 8
-#define linear_factor2 4
 
 #define li_lws_out 4
 #define li_lws_token 64
@@ -55,6 +53,7 @@ typedef struct __cl_context {
     cl_context     context;
 
     cl_command_queue q_input;
+    cl_command_queue q_transfer;
     cl_command_queue q_compute;
 
     cl_program program;
@@ -97,6 +96,7 @@ typedef struct __cl_context {
 
     cl_event  evt_profile;
     cl_event* evt_ptr;
+    cl_event evt_transfer[152];
 } CLContext;
 
 static CLContext ctx = { 0 };
@@ -139,12 +139,13 @@ static void multihead_attn(cl_mem input, cl_mem output,
     err = clSetKernelArg(ctx.k_attn_score, 0, sizeof(cl_mem), &ctx.d_qkv); CHECK_ERROR(err);
     err = clSetKernelArg(ctx.k_attn_score, 1, sizeof(cl_mem), &ctx.d_attn_map); CHECK_ERROR(err);
 
-    size_t lws_attn_score[3] = { 64, 1, 4 };
+    size_t lws_attn_score[3] = { ctx.lws_linear[0], ctx.lws_linear[1], 1 };
     size_t gws_attn_score[3] = {
-        (size_t)tokens,
-        (size_t)((tokens + 3) / 4),
+        (size_t)(tokens + li_opt - 1) / li_opt,
+        (size_t)(tokens + li_tpt - 1) / li_tpt,
         (size_t)batch_size * num_heads
     };
+
     padding_size(gws_attn_score, lws_attn_score, 3);
 
     err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_attn_score, 3, NULL, gws_attn_score, lws_attn_score, 0, NULL, ctx.evt_ptr); CHECK_ERROR(err);
@@ -206,7 +207,9 @@ static void linear_layer(cl_kernel kernel, cl_mem input, cl_mem output, int toke
 
     err = clEnqueueNDRangeKernel(ctx.q_compute, kernel, 2, NULL, gws, ctx.lws_linear, 0, NULL, ctx.evt_ptr); CHECK_ERROR(err);
 #ifdef PROFILE_MODE
-    profile_event(*ctx.evt_ptr, "Linear Layer");
+    if (kernel == ctx.k_linear) profile_event(*ctx.evt_ptr, "Linear Layer");
+    else if (kernel == ctx.k_linear_gelu) profile_event(*ctx.evt_ptr, "Linear Layer + GELU");
+    else if (kernel == ctx.k_patch_embed) profile_event(*ctx.evt_ptr, "Patch Embedding");
 #endif
 }
 
@@ -283,6 +286,7 @@ static void init_kernel(Network* networks) {
     };
 
     ctx.q_input = clCreateCommandQueueWithProperties(ctx.context, ctx.device, props, &err); CHECK_ERROR(err);
+    ctx.q_transfer = clCreateCommandQueueWithProperties(ctx.context, ctx.device, props, &err); CHECK_ERROR(err);
     ctx.q_compute = clCreateCommandQueueWithProperties(ctx.context, ctx.device, props, &err); CHECK_ERROR(err);
 
     size_t kernel_source_size;
@@ -340,19 +344,27 @@ static void init_kernel(Network* networks) {
         if (networks[i].size <= 0) continue;
 
         ctx.d_networks[i] = clCreateBuffer(ctx.context,
-            CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+            CL_MEM_READ_ONLY,
             sizeof(float) * networks[i].size,
-            networks[i].data,
+            NULL,
             &err);
 
+        CHECK_ERROR(err);
+
+        err = clEnqueueWriteBuffer(ctx.q_transfer,
+            ctx.d_networks[i],
+            CL_FALSE, 0,
+            sizeof(float) * networks[i].size,
+            networks[i].data,
+            0, NULL, &ctx.evt_transfer[i]);
         CHECK_ERROR(err);
     }
 
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
     // Create Kernels
 
-    ctx.k_patch_embed = clCreateKernel(ctx.program, "patch_embedding_linear", &err); CHECK_ERROR(err);
-    ctx.k_linear = clCreateKernel(ctx.program, "linear", &err); CHECK_ERROR(err);
+    ctx.k_patch_embed = clCreateKernel(ctx.program, "linear_conv2d", &err); CHECK_ERROR(err);
+    ctx.k_linear = clCreateKernel(ctx.program, "linear_default", &err); CHECK_ERROR(err);
     ctx.k_linear_gelu = clCreateKernel(ctx.program, "linear_gelu", &err); CHECK_ERROR(err);
 
     ctx.k_attn_score = clCreateKernel(ctx.program, "attn_score", &err); CHECK_ERROR(err);
@@ -404,6 +416,15 @@ static void init_kernel(Network* networks) {
 
 static const float image_bytes = sizeof(float) * in_chans * img_size * img_size;
 
+static inline void wait_transfer(int index) {
+    if (ctx.evt_transfer[index] == NULL) return;
+
+    cl_int err = clEnqueueBarrierWithWaitList(ctx.q_compute, 1, &ctx.evt_transfer[index], NULL); CHECK_ERROR(err);
+
+    clReleaseEvent(ctx.evt_transfer[index]);
+    ctx.evt_transfer[index] = NULL;
+}
+
 void ViT_seq_ZZani(ImageData* image, Network* networks, float** probabilities) {
     cl_int err;
 
@@ -449,70 +470,85 @@ void ViT_seq_ZZani(ImageData* image, Network* networks, float** probabilities) {
         evt_input = NULL;
 
         // patch_embbeding
+        wait_transfer(2);
         linear_layer(ctx.k_patch_embed, ctx.d_img, ctx.d_patch, batch_size * num_patches, in_chans * patch_size * patch_size, embed_dim, ctx.d_networks[1], ctx.d_networks[2]);
 
+        wait_transfer(3);
         pos_embedding(ctx.d_patch, ctx.d_networks[0], ctx.d_networks[3], ctx.d_input_embed);
 
+        wait_transfer(15);
         Encoder(ctx.d_input_embed, ctx.d_hidden[0],
             ctx.d_networks[4], ctx.d_networks[5], ctx.d_networks[6], ctx.d_networks[7],
             ctx.d_networks[8], ctx.d_networks[9], ctx.d_networks[10], ctx.d_networks[11],
             ctx.d_networks[12], ctx.d_networks[13], ctx.d_networks[14], ctx.d_networks[15]);
 
+        wait_transfer(27);
         Encoder(ctx.d_hidden[0], ctx.d_hidden[1],
             ctx.d_networks[16], ctx.d_networks[17], ctx.d_networks[18], ctx.d_networks[19],
             ctx.d_networks[20], ctx.d_networks[21], ctx.d_networks[22], ctx.d_networks[23],
             ctx.d_networks[24], ctx.d_networks[25], ctx.d_networks[26], ctx.d_networks[27]);
 
+        wait_transfer(39);
         Encoder(ctx.d_hidden[1], ctx.d_hidden[0],
             ctx.d_networks[28], ctx.d_networks[29], ctx.d_networks[30], ctx.d_networks[31],
             ctx.d_networks[32], ctx.d_networks[33], ctx.d_networks[34], ctx.d_networks[35],
             ctx.d_networks[36], ctx.d_networks[37], ctx.d_networks[38], ctx.d_networks[39]);
 
+        wait_transfer(51);
         Encoder(ctx.d_hidden[0], ctx.d_hidden[1],
             ctx.d_networks[40], ctx.d_networks[41], ctx.d_networks[42], ctx.d_networks[43],
             ctx.d_networks[44], ctx.d_networks[45], ctx.d_networks[46], ctx.d_networks[47],
             ctx.d_networks[48], ctx.d_networks[49], ctx.d_networks[50], ctx.d_networks[51]);
 
+        wait_transfer(63);
         Encoder(ctx.d_hidden[1], ctx.d_hidden[0],
             ctx.d_networks[52], ctx.d_networks[53], ctx.d_networks[54], ctx.d_networks[55],
             ctx.d_networks[56], ctx.d_networks[57], ctx.d_networks[58], ctx.d_networks[59],
             ctx.d_networks[60], ctx.d_networks[61], ctx.d_networks[62], ctx.d_networks[63]);
 
+        wait_transfer(75);
         Encoder(ctx.d_hidden[0], ctx.d_hidden[1],
             ctx.d_networks[64], ctx.d_networks[65], ctx.d_networks[66], ctx.d_networks[67],
             ctx.d_networks[68], ctx.d_networks[69], ctx.d_networks[70], ctx.d_networks[71],
             ctx.d_networks[72], ctx.d_networks[73], ctx.d_networks[74], ctx.d_networks[75]);
 
+        wait_transfer(87);
         Encoder(ctx.d_hidden[1], ctx.d_hidden[0],
             ctx.d_networks[76], ctx.d_networks[77], ctx.d_networks[78], ctx.d_networks[79],
             ctx.d_networks[80], ctx.d_networks[81], ctx.d_networks[82], ctx.d_networks[83],
             ctx.d_networks[84], ctx.d_networks[85], ctx.d_networks[86], ctx.d_networks[87]);
 
+        wait_transfer(99);
         Encoder(ctx.d_hidden[0], ctx.d_hidden[1],
             ctx.d_networks[88], ctx.d_networks[89], ctx.d_networks[90], ctx.d_networks[91],
             ctx.d_networks[92], ctx.d_networks[93], ctx.d_networks[94], ctx.d_networks[95],
             ctx.d_networks[96], ctx.d_networks[97], ctx.d_networks[98], ctx.d_networks[99]);
 
+        wait_transfer(111);
         Encoder(ctx.d_hidden[1], ctx.d_hidden[0],
             ctx.d_networks[100], ctx.d_networks[101], ctx.d_networks[102], ctx.d_networks[103],
             ctx.d_networks[104], ctx.d_networks[105], ctx.d_networks[106], ctx.d_networks[107],
             ctx.d_networks[108], ctx.d_networks[109], ctx.d_networks[110], ctx.d_networks[111]);
 
+        wait_transfer(123);
         Encoder(ctx.d_hidden[0], ctx.d_hidden[1],
             ctx.d_networks[112], ctx.d_networks[113], ctx.d_networks[114], ctx.d_networks[115],
             ctx.d_networks[116], ctx.d_networks[117], ctx.d_networks[118], ctx.d_networks[119],
             ctx.d_networks[120], ctx.d_networks[121], ctx.d_networks[122], ctx.d_networks[123]);
 
+        wait_transfer(135);
         Encoder(ctx.d_hidden[1], ctx.d_hidden[0],
             ctx.d_networks[124], ctx.d_networks[125], ctx.d_networks[126], ctx.d_networks[127],
             ctx.d_networks[128], ctx.d_networks[129], ctx.d_networks[130], ctx.d_networks[131],
             ctx.d_networks[132], ctx.d_networks[133], ctx.d_networks[134], ctx.d_networks[135]);
 
+        wait_transfer(147);
         Encoder(ctx.d_hidden[0], ctx.d_hidden[1],
             ctx.d_networks[136], ctx.d_networks[137], ctx.d_networks[138], ctx.d_networks[139],
             ctx.d_networks[140], ctx.d_networks[141], ctx.d_networks[142], ctx.d_networks[143],
             ctx.d_networks[144], ctx.d_networks[145], ctx.d_networks[146], ctx.d_networks[147]);
 
+        wait_transfer(149);
         layer_norm(ctx.d_hidden[1], ctx.d_hidden[0], ctx.d_networks[148], ctx.d_networks[149]);
 
         err = clSetKernelArg(ctx.k_extract_cls, 0, sizeof(cl_mem), &ctx.d_hidden[0]); CHECK_ERROR(err);
@@ -528,6 +564,7 @@ void ViT_seq_ZZani(ImageData* image, Network* networks, float** probabilities) {
         profile_event(*ctx.evt_ptr, "Extract CLS Token");
 #endif
 
+        wait_transfer(151);
         linear_layer(ctx.k_linear, ctx.d_cls_tokens, ctx.d_logits, batch_size, embed_dim, num_classes, ctx.d_networks[150], ctx.d_networks[151]);
 
         int out_rows = current_batch_size;
