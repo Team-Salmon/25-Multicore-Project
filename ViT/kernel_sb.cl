@@ -18,7 +18,10 @@ inline void load_weights (
     int global_row = g_out_group_start + row_in_tile;
     int global_col = k_curr + col_in_tile;
 
-    float4 val = vload4(0, &weights[global_row * K + global_col]);
+    float4 val = (float4)0.0f;
+    if (global_row < N && global_col < K) {
+        val = vload4(0, &weights[global_row * K + global_col]);
+    }
 
     local_weights[col_in_tile + 0][row_in_tile] = val.x;
     local_weights[col_in_tile + 1][row_in_tile] = val.y;
@@ -84,7 +87,10 @@ inline void load_inputs (
         int g_row = g_token_base + t;
         int k_offset = l_out_idx * 4;
 
-        float4 val = vload4(0, &input[g_row * K + (k_curr + k_offset)]);
+        float4 val = (float4)0.0f;
+        if (g_row < M && (k_curr + k_offset) < K) {
+            val = vload4(0, &input[g_row * K + k_curr + k_offset]);
+        }
 
         local_input[k_offset + 0][l_row] = val.x;
         local_input[k_offset + 1][l_row] = val.y;
@@ -300,7 +306,11 @@ inline void load_Q(
         int k_offset = l_out_idx * 4;
 
         int addr = batch_head_offset + (g_row * QKV_DIM) + (k_curr + k_offset);
-        float4 val = vload4(0, &QKV[addr]);
+
+        float4 val = (float4)0.0f;
+        if (g_row < TOKENS) {
+            val = vload4(0, &QKV[addr]);
+        }
 
         local_input[k_offset + 0][l_row] = val.x;
         local_input[k_offset + 1][l_row] = val.y;
@@ -331,7 +341,11 @@ inline void load_K (
         int target_dim = k_curr + w_r; 
 
         int addr = k_start_offset + (target_token * QKV_DIM) + target_dim;
-        local_weights[w_r][w_c] = QKV[addr];
+        if (target_token < TOKENS && target_dim < HEAD_DIM) {
+            local_weights[w_r][w_c] = QKV[addr];
+        } else {
+            local_weights[w_r][w_c] = 0.0f;
+        }
     }
 }
 
