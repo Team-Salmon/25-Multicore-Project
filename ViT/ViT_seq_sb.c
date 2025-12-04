@@ -23,6 +23,7 @@
 
 // custom defines
 #define batch_size 8
+#define align16(x) ((((x) + 15) << 4) >> 4)
 
 #define li_lws_out 4
 #define li_lws_token 64
@@ -357,36 +358,36 @@ static void init_kernel(Network* networks) {
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
     // Create Kernels
 
-    ctx.k_patch_embed = clCreateKernel(ctx.program, "linear_conv2d", &err); CHECK_ERROR(err);
-    ctx.k_linear = clCreateKernel(ctx.program, "linear_default", &err); CHECK_ERROR(err);
-    ctx.k_linear_gelu = clCreateKernel(ctx.program, "linear_gelu", &err); CHECK_ERROR(err);
+    ctx.k_patch_embed   = clCreateKernel(ctx.program, "linear_conv2d", &err); CHECK_ERROR(err);
+    ctx.k_linear        = clCreateKernel(ctx.program, "linear_default", &err); CHECK_ERROR(err);
+    ctx.k_linear_gelu   = clCreateKernel(ctx.program, "linear_gelu", &err); CHECK_ERROR(err);
 
-    ctx.k_attn_score = clCreateKernel(ctx.program, "attn_score", &err); CHECK_ERROR(err);
-    ctx.k_softmax = clCreateKernel(ctx.program, "softmax", &err); CHECK_ERROR(err);
-    ctx.k_attn_context = clCreateKernel(ctx.program, "attn_context", &err); CHECK_ERROR(err);
-    ctx.k_layernorm = clCreateKernel(ctx.program, "layer_norm", &err); CHECK_ERROR(err);
-    ctx.k_add = clCreateKernel(ctx.program, "add", &err); CHECK_ERROR(err);
-    ctx.k_pos_emb = clCreateKernel(ctx.program, "pos_embedding", &err); CHECK_ERROR(err);
-    ctx.k_extract_cls = clCreateKernel(ctx.program, "extract_cls", &err); CHECK_ERROR(err);
+    ctx.k_attn_score    = clCreateKernel(ctx.program, "attn_score", &err); CHECK_ERROR(err);
+    ctx.k_softmax       = clCreateKernel(ctx.program, "softmax", &err); CHECK_ERROR(err);
+    ctx.k_attn_context  = clCreateKernel(ctx.program, "attn_context", &err); CHECK_ERROR(err);
+    ctx.k_layernorm     = clCreateKernel(ctx.program, "layer_norm", &err); CHECK_ERROR(err);
+    ctx.k_add           = clCreateKernel(ctx.program, "add", &err); CHECK_ERROR(err);
+    ctx.k_pos_emb       = clCreateKernel(ctx.program, "pos_embedding", &err); CHECK_ERROR(err);
+    ctx.k_extract_cls   = clCreateKernel(ctx.program, "extract_cls", &err); CHECK_ERROR(err);
 
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
     // Create Buffers
 
-    ctx.d_img = clCreateBuffer(ctx.context, CL_MEM_READ_ONLY, sizeof(float) * batch_size * in_chans * img_size * img_size, NULL, &err); CHECK_ERROR(err);
-    ctx.d_patch = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE, sizeof(float) * batch_size * embed_dim * num_patches, NULL, &err); CHECK_ERROR(err);
-    ctx.d_input_embed = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE, sizeof(float) * batch_size * embed_dim * tokens, NULL, &err); CHECK_ERROR(err);
+    ctx.d_img           = clCreateBuffer(ctx.context, CL_MEM_READ_ONLY,  sizeof(float) * align16(batch_size * in_chans * img_size * img_size), NULL, &err); CHECK_ERROR(err);
+    ctx.d_patch         = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE, sizeof(float) * align16(batch_size * embed_dim * num_patches), NULL, &err); CHECK_ERROR(err);
+    ctx.d_input_embed   = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE, sizeof(float) * align16(batch_size * embed_dim * tokens), NULL, &err); CHECK_ERROR(err);
 
-    ctx.d_hidden[0] = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE, sizeof(float) * batch_size * enc_size, NULL, &err); CHECK_ERROR(err);
-    ctx.d_hidden[1] = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE, sizeof(float) * batch_size * enc_size, NULL, &err); CHECK_ERROR(err);
+    ctx.d_hidden[0]     = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE, sizeof(float) * align16(batch_size * enc_size), NULL, &err); CHECK_ERROR(err);
+    ctx.d_hidden[1]     = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE, sizeof(float) * align16(batch_size * enc_size), NULL, &err); CHECK_ERROR(err);
 
-    ctx.d_qkv = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE, sizeof(float) * total_tokens * qkv_dim, NULL, &err); CHECK_ERROR(err);
-    ctx.d_context_vec = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE, sizeof(float) * total_tokens * embed_dim, NULL, &err); CHECK_ERROR(err);
-    ctx.d_attn_map = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE, sizeof(float) * total_tokens * num_heads * tokens, NULL, &err); CHECK_ERROR(err);
-    ctx.d_mlp_tmp = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE, sizeof(float) * total_tokens * hidden_dim, NULL, &err); CHECK_ERROR(err);
-    ctx.d_enc_tmp = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE, sizeof(float) * batch_size * tokens * embed_dim, NULL, &err); CHECK_ERROR(err);
+    ctx.d_qkv           = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE, sizeof(float) * align16(total_tokens * qkv_dim), NULL, &err); CHECK_ERROR(err);
+    ctx.d_context_vec   = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE, sizeof(float) * align16(total_tokens * embed_dim), NULL, &err); CHECK_ERROR(err);
+    ctx.d_attn_map      = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE, sizeof(float) * align16(total_tokens * num_heads * tokens), NULL, &err); CHECK_ERROR(err);
+    ctx.d_mlp_tmp       = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE, sizeof(float) * align16(total_tokens * hidden_dim), NULL, &err); CHECK_ERROR(err);
+    ctx.d_enc_tmp       = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE, sizeof(float) * align16(batch_size * tokens * embed_dim), NULL, &err); CHECK_ERROR(err);
 
-    ctx.d_cls_tokens = clCreateBuffer(ctx.context, CL_MEM_READ_ONLY, sizeof(float) * batch_size * embed_dim, NULL, &err); CHECK_ERROR(err);
-    ctx.d_logits = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE, sizeof(float) * batch_size * num_classes, NULL, &err); CHECK_ERROR(err);
+    ctx.d_cls_tokens    = clCreateBuffer(ctx.context, CL_MEM_READ_ONLY,  sizeof(float) * align16(batch_size * embed_dim), NULL, &err); CHECK_ERROR(err);
+    ctx.d_logits        = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE, sizeof(float) * align16(batch_size * num_classes), NULL, &err); CHECK_ERROR(err);
 
     ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
     // Set work sizes
@@ -579,7 +580,7 @@ void ViT_seq_sb(ImageData* image, Network* networks, float** probabilities) {
 #ifdef PROFILE_MODE
         profile_event(evt_done[steps], "Copy Data");
 #endif
-        //break; // for test purpose, process only one batch
+        break; // for test purpose, process only one batch
     }
 
     if (evt_done[steps]) {
