@@ -23,14 +23,10 @@ inline void load_weights (
     __global const float* weights,
     __local float tile_weights[LI_TILE][LI_STRIDE_WEIGHT],
     int k_curr, int K, int N,
-    int g_out_group_start, 
-    int l_flat, 
-    int l_token_idx, 
-    int l_out_idx ) {
-
+    int g_out_group_start, int l_flat, int l_token_idx, int l_out_idx ) {
     #pragma unroll
-    for (int i = 0; i < 4; ++i) {
-        int load_idx = l_flat * 4 + i;
+    for (int i = 0; i < 2; ++i) {
+        int load_idx = l_flat * 2 + i;
         int w_r = load_idx & (LI_TILE - 1);
         int w_c = load_idx >> 4;
 
@@ -95,7 +91,7 @@ inline void load_inputs (
     }
 }
 
-inline void store_linear (
+inline void store_result (
     __global float* output,
     __global const float* bias,
     float acc[LI_TPT][LI_OPT],
@@ -105,10 +101,8 @@ inline void store_linear (
     int gelu ) {
     if (g_out_base >= N || g_token_base >= M) return;
 
-    float4 b0 = (g_out_base + 0 < N) ? vload4(0, &bias[g_out_base + 0]) : (float4)(0.0f);
-    float4 b1 = (g_out_base + 4 < N) ? vload4(0, &bias[g_out_base + 4]) : (float4)(0.0f);
-    float4 b2 = (g_out_base + 8 < N) ? vload4(0, &bias[g_out_base + 8]) : (float4)(0.0f);
-    float4 b3 = (g_out_base + 12 < N) ? vload4(0, &bias[g_out_base + 12]) : (float4)(0.0f);
+    float4 b0 = vload4(0, &bias[g_out_base + 0]);
+    float4 b1 = vload4(0, &bias[g_out_base + 4]);
 
     #pragma unroll
     for (int t = 0; t < LI_TPT; ++t) {
@@ -116,21 +110,15 @@ inline void store_linear (
         if (curr_g_token < M) {
             float4 res0 = (float4)(acc[t][0], acc[t][1], acc[t][2], acc[t][3]) + b0;
             float4 res1 = (float4)(acc[t][4], acc[t][5], acc[t][6], acc[t][7]) + b1;
-            float4 res2 = (float4)(acc[t][8], acc[t][9], acc[t][10], acc[t][11]) + b2;
-            float4 res3 = (float4)(acc[t][12], acc[t][13], acc[t][14], acc[t][15]) + b3;
 
             if (gelu) {
                 res0 = gelu4(res0);
                 res1 = gelu4(res1);
-                res2 = gelu4(res2);
-                res3 = gelu4(res3);
             }
 
             __global float* out_ptr = &output[curr_g_token * N + g_out_base];
-            if (g_out_base + 0 < N) vstore4(res0, 0, out_ptr + 0);
-            if (g_out_base + 4 < N) vstore4(res1, 0, out_ptr + 4);
-            if (g_out_base + 8 < N) vstore4(res2, 0, out_ptr + 8);
-            if (g_out_base + 12 < N) vstore4(res3, 0, out_ptr + 12);
+            vstore4(res0, 0, out_ptr + 0);
+            vstore4(res1, 0, out_ptr + 4);
         }
     }
 }
@@ -168,7 +156,7 @@ __kernel void linear_default(
         barrier(CLK_LOCAL_MEM_FENCE);
     }
 
-    store_linear(output, bias, acc, g_token_base, g_out_base, M, N, 0);
+    store_result(output, bias, acc, g_token_base, g_out_base, M, N, 0);
 }
 
 __kernel void linear_gelu (
@@ -204,7 +192,7 @@ __kernel void linear_gelu (
         barrier(CLK_LOCAL_MEM_FENCE);
     }
 
-    store_linear(output, bias, acc, g_token_base, g_out_base, M, N, 1);
+    store_result(output, bias, acc, g_token_base, g_out_base, M, N, 1);
 }
 
 __kernel void linear_conv2d(
@@ -284,7 +272,7 @@ __kernel void linear_conv2d(
         barrier(CLK_LOCAL_MEM_FENCE);
     }
 
-    store_linear(output, bias, acc, g_token_base, g_out_base, M, N, 0);
+    store_result(output, bias, acc, g_token_base, g_out_base, M, N, 0);
 }
 
 inline void load_Q(
@@ -329,8 +317,8 @@ inline void load_K (
     int k_start_offset = batch_head_offset + EMBED_DIM; 
 
     #pragma unroll
-    for (int i = 0; i < 4; ++i) {
-        int load_idx = l_flat * 4 + i;
+    for (int i = 0; i < 2; ++i) {
+        int load_idx = l_flat * 2 + i;
         int w_r = load_idx & (LI_TILE - 1);
         int w_c = load_idx >> 4;
 
@@ -347,7 +335,7 @@ inline void load_K (
     }
 }
 
-inline void store_score (
+inline void store_score(
     __global float* scores,
     float acc[LI_TPT][LI_OPT],
     int g_token_base, 
@@ -364,10 +352,10 @@ inline void store_score (
         int curr_g_token = g_token_base + t;
         
         if (curr_g_token < TOKENS) {
-            float vals[LI_OPT];
+            float vals[8];
 
             #pragma unroll
-            for (int i = 0; i < LI_OPT; i++) {
+            for (int i = 0; i < 8; i++) {
                 vals[i] = acc[t][i] * scale;
             }
 
@@ -375,9 +363,11 @@ inline void store_score (
             int col_idx = g_out_base;
 
             #pragma unroll
-            for (int i = 0; i < LI_OPT; ++i) {
+            for (int i = 0; i < 8; ++i) {
                 if (col_idx + i < TOKENS) {
                     scores[row_start + col_idx + i] = vals[i];
+                } else {
+                    break;
                 }
             }
         }
