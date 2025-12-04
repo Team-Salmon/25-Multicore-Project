@@ -18,12 +18,18 @@ inline void load_weights (
     int global_row = g_out_group_start + row_in_tile;
     int global_col = k_curr + col_in_tile;
 
-    float4 val = vload4(0, &weights[global_row * K + global_col]);
+    float4 val_lo = vload4(0, &weights[global_row * K + global_col]);
+    float4 val_hi = vload4(0, &weights[global_row * K + (global_col + 16)]);
 
-    local_weights[col_in_tile + 0][row_in_tile] = val.x;
-    local_weights[col_in_tile + 1][row_in_tile] = val.y;
-    local_weights[col_in_tile + 2][row_in_tile] = val.z;
-    local_weights[col_in_tile + 3][row_in_tile] = val.w;
+    local_weights[col_in_tile + 0][row_in_tile] = val_lo.x;
+    local_weights[col_in_tile + 1][row_in_tile] = val_lo.y;
+    local_weights[col_in_tile + 2][row_in_tile] = val_lo.z;
+    local_weights[col_in_tile + 3][row_in_tile] = val_lo.w;
+
+    local_weights[col_in_tile + 16][row_in_tile] = val_hi.x;
+    local_weights[col_in_tile + 17][row_in_tile] = val_hi.y;
+    local_weights[col_in_tile + 18][row_in_tile] = val_hi.z;
+    local_weights[col_in_tile + 19][row_in_tile] = val_hi.w;
 }
 
 inline void gemm (
@@ -73,12 +79,18 @@ inline void load_inputs (
         int g_row = g_token_base + t;
         int k_offset = l_out_idx * 4;
 
-        float4 val = vload4(0, &input[g_row * K + (k_curr + k_offset)]);
+        float4 val_lo = vload4(0, &input[g_row * K + (k_curr + k_offset)]);
+        float4 val_hi = vload4(0, &input[g_row * K + (k_curr + k_offset + 16)]);
 
-        local_input[l_row][k_offset + 0] = val.x;
-        local_input[l_row][k_offset + 1] = val.y;
-        local_input[l_row][k_offset + 2] = val.z;
-        local_input[l_row][k_offset + 3] = val.w;
+        local_input[l_row][k_offset + 0] = val_lo.x;
+        local_input[l_row][k_offset + 1] = val_lo.y;
+        local_input[l_row][k_offset + 2] = val_lo.z;
+        local_input[l_row][k_offset + 3] = val_lo.w;
+
+        local_input[l_row][k_offset + 16] = val_hi.x;
+        local_input[l_row][k_offset + 17] = val_hi.y;
+        local_input[l_row][k_offset + 18] = val_hi.z;
+        local_input[l_row][k_offset + 19] = val_hi.w;
     }
 }
 
@@ -237,34 +249,60 @@ __kernel void linear_conv2d(
     for (int t = 0; t < LI_TPT; ++t)
         for (int c = 0; c < LI_OPT; ++c) acc[t][c] = 0.0f;
 
-    for (int k_curr = 0; k_curr < K; k_curr += LI_TILE) {
+        for (int k_curr = 0; k_curr < K; k_curr += LI_TILE) {
         #pragma unroll
         for (int t = 0; t < LI_TPT; ++t) {
             int l_row = l_token_idx * LI_TPT + t;
             int g_row = g_token_base + t;
             int k_offset = l_out_idx * 4;
+        
+            // -----------------------------------------------------------
+            // 1. Lower Part (0~15) 로딩
+            // -----------------------------------------------------------
             int current_k = k_curr + k_offset;
+            float4 val_lo = (float4)(0.0f);
 
-            float4 val = (float4)(0.0f);
-
+            // 범위 체크 & 주소 계산
             if (g_row < M && current_k < K) {
                 int ch = current_k / (PATCH_SIZE * PATCH_SIZE);
                 int rem_k = current_k & ((PATCH_SIZE * PATCH_SIZE) - 1);
                 int py = rem_k >> 4;
                 int px = rem_k & (PATCH_SIZE - 1);
                 int addr = patch_base_addr[t] + ch * (IMG_SIZE * IMG_SIZE) + py * IMG_SIZE + px;
-                
-                val = vload4(0, &input_img[addr]);
+                val_lo = vload4(0, &input_img[addr]);
             }
 
-            local_input[l_row][k_offset + 0] = val.x;
-            local_input[l_row][k_offset + 1] = val.y;
-            local_input[l_row][k_offset + 2] = val.z;
-            local_input[l_row][k_offset + 3] = val.w;
+            // 2. Upper Part (16~31) 로딩 - [여기가 추가되어야 함!]
+            // -----------------------------------------------------------
+            int current_k_hi = current_k + 16; // +16 위치
+            float4 val_hi = (float4)(0.0f);
+
+            if (g_row < M && current_k_hi < K) {
+                // 주소 계산을 current_k_hi 기준으로 다시 해야 함 (채널/좌표가 달라질 수 있음)
+                int ch = current_k_hi / (PATCH_SIZE * PATCH_SIZE);
+                int rem_k = current_k_hi & ((PATCH_SIZE * PATCH_SIZE) - 1);
+                int py = rem_k >> 4;
+                int px = rem_k & (PATCH_SIZE - 1);
+                int addr = patch_base_addr[t] + ch * (IMG_SIZE * IMG_SIZE) + py * IMG_SIZE + px;
+                val_hi = vload4(0, &input_img[addr]);
+            }
+            // -----------------------------------------------------------
+
+            // Local Memory 저장 (Lower)
+            local_input[l_row][k_offset + 0] = val_lo.x;
+            local_input[l_row][k_offset + 1] = val_lo.y;
+            local_input[l_row][k_offset + 2] = val_lo.z;
+            local_input[l_row][k_offset + 3] = val_lo.w;
+
+            // Local Memory 저장 (Upper) - [여기도 추가!]
+            local_input[l_row][k_offset + 16] = val_hi.x;
+            local_input[l_row][k_offset + 17] = val_hi.y;
+            local_input[l_row][k_offset + 18] = val_hi.z;
+            local_input[l_row][k_offset + 19] = val_hi.w;
         }
 
         load_weights(weights, local_weights, k_curr, K, N, g_out_group_start, l_flat, l_token_idx, l_out_idx);
-        
+    
         barrier(CLK_LOCAL_MEM_FENCE);
         gemm(local_input, local_weights, acc, l_token_idx, l_out_idx);
         barrier(CLK_LOCAL_MEM_FENCE);
@@ -287,14 +325,22 @@ inline void load_Q(
         int l_row = l_token_idx * LI_TPT + t;
         int g_row = g_token_base + t;
         int k_offset = l_out_idx * 4;
+        
+        int addr_lo = batch_head_offset + (g_row * QKV_DIM) + (k_curr + k_offset);
+        float4 val_lo = vload4(0, &QKV[addr_lo]);
 
-        int addr = batch_head_offset + (g_row * QKV_DIM) + (k_curr + k_offset);
-        float4 val = vload4(0, &QKV[addr]);
+        int addr_hi = batch_head_offset + (g_row * QKV_DIM) + (k_curr + k_offset + 16);
+        float4 val_hi = vload4(0, &QKV[addr_hi]);
 
-        local_input[l_row][k_offset + 0] = val.x;
-        local_input[l_row][k_offset + 1] = val.y;
-        local_input[l_row][k_offset + 2] = val.z;
-        local_input[l_row][k_offset + 3] = val.w;
+        local_input[l_row][k_offset + 0] = val_lo.x;
+        local_input[l_row][k_offset + 1] = val_lo.y;
+        local_input[l_row][k_offset + 2] = val_lo.z;
+        local_input[l_row][k_offset + 3] = val_lo.w;
+
+        local_input[l_row][k_offset + 16] = val_hi.x;
+        local_input[l_row][k_offset + 17] = val_hi.y;
+        local_input[l_row][k_offset + 18] = val_hi.z;
+        local_input[l_row][k_offset + 19] = val_hi.w;
     }
 }
 
@@ -311,10 +357,11 @@ inline void load_K (
     int k_start_offset = batch_head_offset + EMBED_DIM; 
 
     #pragma unroll
-    for (int i = 0; i < 4; ++i) {
-        int load_idx = l_flat * 4 + i;
+    for (int i = 0; i < 8; ++i) {
+        int load_idx = l_flat * 8 + i; 
+        
         int w_r = load_idx & (LI_TILE - 1);
-        int w_c = load_idx >> 4;
+        int w_c = load_idx >> 5; // (LI_TILE이 32면 5비트 시프트 맞음)
 
         int target_token = g_out_group_start + w_c;
         int target_dim = k_curr + w_r; 
