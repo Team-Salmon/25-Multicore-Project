@@ -65,6 +65,10 @@ typedef struct __cl_context {
     cl_kernel k_linear;
     cl_kernel k_linear_gelu;
     size_t    lws_linear[2];
+    // prebound per-layer kernels (indexed by network buffer index)
+    cl_kernel k_linear_prebound[152];
+    cl_kernel k_linear_gelu_prebound[152];
+    cl_kernel k_patch_prebound;
 
     cl_kernel k_attn_score;
     cl_kernel k_softmax;
@@ -101,6 +105,10 @@ static CLContext ctx = { 0 };
 
 static void linear_layer(cl_kernel, cl_mem, cl_mem, int, int, int, cl_mem, cl_mem);
 static void add(cl_mem, cl_mem, cl_mem, int);
+static void linear_layer_bound(cl_kernel, cl_mem, cl_mem, int, int);
+
+// helper to create kernel and bind weight/bias and scalar dims
+static cl_kernel create_prebound_kernel(const char* name, cl_mem weight, cl_mem bias, int token_size, int in_features, int out_features);
 
 static void init_kernel(Network*);
 static void release_kernel();
@@ -129,10 +137,10 @@ static void layer_norm(cl_mem input, cl_mem ouput, cl_mem weight, cl_mem bias) {
 }
 
 static void multihead_attn(cl_mem input, cl_mem output,
-    cl_mem in_weight, cl_mem in_bias, cl_mem out_weight, cl_mem out_bias) {
+    cl_kernel k_qkv, cl_kernel k_attn_out) {
 
     cl_int err;
-    linear_layer(ctx.k_linear, input, ctx.d_qkv, total_tokens, embed_dim, qkv_dim, in_weight, in_bias);
+    linear_layer_bound(k_qkv, input, ctx.d_qkv, total_tokens, qkv_dim);
 
     err = clSetKernelArg(ctx.k_attn_score, 0, sizeof(cl_mem), &ctx.d_qkv); CHECK_ERROR(err);
     err = clSetKernelArg(ctx.k_attn_score, 1, sizeof(cl_mem), &ctx.d_attn_map); CHECK_ERROR(err);
@@ -151,7 +159,7 @@ static void multihead_attn(cl_mem input, cl_mem output,
     profile_event(*ctx.evt_ptr, "Attention Score");
 #endif
 
-    // Softmax °è»ê
+    // Softmax ï¿½ï¿½ï¿½
 
     int token_size = tokens;
     err = clSetKernelArg(ctx.k_softmax, 0, sizeof(cl_mem), &ctx.d_attn_map); CHECK_ERROR(err);
@@ -182,7 +190,7 @@ static void multihead_attn(cl_mem input, cl_mem output,
     profile_event(*ctx.evt_ptr, "Context Vector");
 #endif
 
-    linear_layer(ctx.k_linear, ctx.d_context_vec, output, total_tokens, embed_dim, embed_dim, out_weight, out_bias);
+    linear_layer_bound(k_attn_out, ctx.d_context_vec, output, total_tokens, embed_dim);
 }
 
 static void linear_layer(cl_kernel kernel, cl_mem input, cl_mem output, int token_size, int in_features, int out_features, cl_mem weight, cl_mem bias) {
@@ -207,23 +215,7 @@ static void linear_layer(cl_kernel kernel, cl_mem input, cl_mem output, int toke
 #endif
 }
 
-static void mlp_block(cl_mem input, cl_mem output, cl_mem fc1_weight, cl_mem fc1_bias, cl_mem fc2_weight, cl_mem fc2_bias) {
-    linear_layer(ctx.k_linear_gelu, input, ctx.d_mlp_tmp, total_tokens, embed_dim, hidden_dim, fc1_weight, fc1_bias);
-    linear_layer(ctx.k_linear, ctx.d_mlp_tmp, output, total_tokens, hidden_dim, embed_dim, fc2_weight, fc2_bias);
-}
 
-static void Encoder(cl_mem input, cl_mem output,
-    cl_mem ln1_w, cl_mem ln1_b, cl_mem attn_w, cl_mem attn_b, cl_mem attn_out_w, cl_mem attn_out_b,
-    cl_mem ln2_w, cl_mem ln2_b, cl_mem mlp1_w, cl_mem mlp1_b, cl_mem mlp2_w, cl_mem mlp2_b) {
-
-    layer_norm(input, ctx.d_enc_tmp, ln1_w, ln1_b);
-    multihead_attn(ctx.d_enc_tmp, output, attn_w, attn_b, attn_out_w, attn_out_b);
-    add(input, output, output, batch_size * tokens * embed_dim);
-
-    layer_norm(output, ctx.d_enc_tmp, ln2_w, ln2_b);
-    mlp_block(ctx.d_enc_tmp, input, mlp1_w, mlp1_b, mlp2_w, mlp2_b);
-    add(output, input, output, batch_size * tokens * embed_dim);
-}
 
 static void add(cl_mem a, cl_mem b, cl_mem output, int size) {
     cl_int err;
@@ -239,6 +231,58 @@ static void add(cl_mem a, cl_mem b, cl_mem output, int size) {
 #ifdef PROFILE_MODE
     profile_event(*ctx.evt_ptr, "Add");
 #endif
+}
+
+// create a kernel instance and bind weight/bias and scalar dims (args 2..6)
+static cl_kernel create_prebound_kernel(const char* name, cl_mem weight, cl_mem bias, int token_size, int in_features, int out_features) {
+    if (weight == NULL || bias == NULL) return NULL;
+    cl_int err;
+    cl_kernel k = clCreateKernel(ctx.program, name, &err);
+    if (err != CL_SUCCESS) return NULL;
+
+    err = clSetKernelArg(k, 2, sizeof(cl_mem), &weight); if (err != CL_SUCCESS) { clReleaseKernel(k); return NULL; }
+    err = clSetKernelArg(k, 3, sizeof(cl_mem), &bias); if (err != CL_SUCCESS) { clReleaseKernel(k); return NULL; }
+    err = clSetKernelArg(k, 4, sizeof(int), &token_size); if (err != CL_SUCCESS) { clReleaseKernel(k); return NULL; }
+    err = clSetKernelArg(k, 5, sizeof(int), &in_features); if (err != CL_SUCCESS) { clReleaseKernel(k); return NULL; }
+    err = clSetKernelArg(k, 6, sizeof(int), &out_features); if (err != CL_SUCCESS) { clReleaseKernel(k); return NULL; }
+
+    return k;
+}
+
+// set only input/output args (0,1) and enqueue using provided kernel (which already has weight/bias/dims bound)
+static void linear_layer_bound(cl_kernel kernel, cl_mem input, cl_mem output, int token_size, int out_features) {
+    if (kernel == NULL) return;
+    cl_int err;
+    err = clSetKernelArg(kernel, 0, sizeof(cl_mem), &input); CHECK_ERROR(err);
+    err = clSetKernelArg(kernel, 1, sizeof(cl_mem), &output); CHECK_ERROR(err);
+
+    size_t gws[2] = { (out_features + li_opt - 1) / li_opt, (token_size + li_tpt - 1) / li_tpt };
+    padding_size(gws, ctx.lws_linear, 2);
+
+    err = clEnqueueNDRangeKernel(ctx.q_compute, kernel, 2, NULL, gws, ctx.lws_linear, 0, NULL, ctx.evt_ptr); CHECK_ERROR(err);
+#ifdef PROFILE_MODE
+    if (kernel == ctx.k_linear) profile_event(*ctx.evt_ptr, "Linear Layer");
+    else if (kernel == ctx.k_linear_gelu) profile_event(*ctx.evt_ptr, "Linear Layer + GELU");
+    else if (kernel == ctx.k_patch_embed) profile_event(*ctx.evt_ptr, "Patch Embedding");
+#endif
+}
+
+static void mlp_block(cl_mem input, cl_mem output, cl_kernel k_fc1, cl_kernel k_fc2) {
+    linear_layer_bound(k_fc1, input, ctx.d_mlp_tmp, total_tokens, hidden_dim);
+    linear_layer_bound(k_fc2, ctx.d_mlp_tmp, output, total_tokens, embed_dim);
+}
+
+static void Encoder(cl_mem input, cl_mem output,
+    cl_mem ln1_w, cl_mem ln1_b, cl_mem ln2_w, cl_mem ln2_b,
+    cl_kernel k_attn_qkv, cl_kernel k_attn_out, cl_kernel k_mlp1, cl_kernel k_mlp2) {
+
+    layer_norm(input, ctx.d_enc_tmp, ln1_w, ln1_b);
+    multihead_attn(ctx.d_enc_tmp, output, k_attn_qkv, k_attn_out);
+    add(input, output, output, batch_size * tokens * embed_dim);
+
+    layer_norm(output, ctx.d_enc_tmp, ln2_w, ln2_b);
+    mlp_block(ctx.d_enc_tmp, input, k_mlp1, k_mlp2);
+    add(output, input, output, batch_size * tokens * embed_dim);
 }
 
 static void pos_embedding(cl_mem input, cl_mem cls, cl_mem pos, cl_mem output) {
@@ -370,6 +414,31 @@ static void init_kernel(Network* networks) {
     ctx.k_extract_cls = clCreateKernel(ctx.program, "extract_cls", &err); CHECK_ERROR(err);
 
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    // Create prebound kernels for weights/biases that are fixed per-layer
+    for (int i = 0; i < 152; ++i) {
+        ctx.k_linear_prebound[i] = NULL;
+        ctx.k_linear_gelu_prebound[i] = NULL;
+    }
+
+    // patch embedding weights are at index 1/2
+    ctx.k_patch_prebound = create_prebound_kernel("linear_conv2d", ctx.d_networks[1], ctx.d_networks[2], batch_size * num_patches, in_chans * patch_size * patch_size, embed_dim);
+
+    // per-encoder-layer prebound kernels
+    for (int layer = 0; layer < depth; ++layer) {
+        int base = 4 + layer * 12;
+        // qkv
+        if (ctx.d_networks[base + 2]) ctx.k_linear_prebound[base + 2] = create_prebound_kernel("linear_default", ctx.d_networks[base + 2], ctx.d_networks[base + 3], total_tokens, embed_dim, qkv_dim);
+        // attn out
+        if (ctx.d_networks[base + 4]) ctx.k_linear_prebound[base + 4] = create_prebound_kernel("linear_default", ctx.d_networks[base + 4], ctx.d_networks[base + 5], total_tokens, embed_dim, embed_dim);
+        // mlp fc1 (gelu)
+        if (ctx.d_networks[base + 8]) ctx.k_linear_gelu_prebound[base + 8] = create_prebound_kernel("linear_gelu", ctx.d_networks[base + 8], ctx.d_networks[base + 9], total_tokens, embed_dim, hidden_dim);
+        // mlp fc2
+        if (ctx.d_networks[base + 10]) ctx.k_linear_prebound[base + 10] = create_prebound_kernel("linear_default", ctx.d_networks[base + 10], ctx.d_networks[base + 11], total_tokens, hidden_dim, embed_dim);
+    }
+
+    // final classifier at 150/151
+    if (ctx.d_networks[150]) ctx.k_linear_prebound[150] = create_prebound_kernel("linear_default", ctx.d_networks[150], ctx.d_networks[151], batch_size, embed_dim, num_classes);
+
     // Create Buffers
 
     ctx.d_img = clCreateBuffer(ctx.context, CL_MEM_READ_ONLY, sizeof(float) * batch_size * in_chans * img_size * img_size, NULL, &err); CHECK_ERROR(err);
@@ -465,82 +534,82 @@ void ViT_seq_sb(ImageData* image, Network* networks, float** probabilities) {
 
         // patch_embbeding
         wait_transfer(2);
-		linear_layer(ctx.k_patch_embed, ctx.d_img, ctx.d_patch, batch_size * num_patches, in_chans * patch_size * patch_size, embed_dim, ctx.d_networks[1], ctx.d_networks[2]);
+        linear_layer_bound(ctx.k_patch_prebound, ctx.d_img, ctx.d_patch, batch_size * num_patches, embed_dim);
 
         wait_transfer(3);
         pos_embedding(ctx.d_patch, ctx.d_networks[0], ctx.d_networks[3], ctx.d_input_embed);
 
         wait_transfer(15);
+        // layer 0 base=4
         Encoder(ctx.d_input_embed, ctx.d_hidden[0],
-            ctx.d_networks[4], ctx.d_networks[5], ctx.d_networks[6], ctx.d_networks[7],
-            ctx.d_networks[8], ctx.d_networks[9], ctx.d_networks[10], ctx.d_networks[11],
-            ctx.d_networks[12], ctx.d_networks[13], ctx.d_networks[14], ctx.d_networks[15]);
+            ctx.d_networks[4], ctx.d_networks[5], ctx.d_networks[10], ctx.d_networks[11],
+            ctx.k_linear_prebound[6], ctx.k_linear_prebound[8], ctx.k_linear_gelu_prebound[12], ctx.k_linear_prebound[14]);
 
-		wait_transfer(27);
+        wait_transfer(27);
+        // layer 1 base=16
         Encoder(ctx.d_hidden[0], ctx.d_hidden[1],
-            ctx.d_networks[16], ctx.d_networks[17], ctx.d_networks[18], ctx.d_networks[19],
-            ctx.d_networks[20], ctx.d_networks[21], ctx.d_networks[22], ctx.d_networks[23],
-            ctx.d_networks[24], ctx.d_networks[25], ctx.d_networks[26], ctx.d_networks[27]);
+            ctx.d_networks[16], ctx.d_networks[17], ctx.d_networks[22], ctx.d_networks[23],
+            ctx.k_linear_prebound[18], ctx.k_linear_prebound[20], ctx.k_linear_gelu_prebound[24], ctx.k_linear_prebound[26]);
 
-		wait_transfer(39);
+        wait_transfer(39);
+        // layer 2 base=28
         Encoder(ctx.d_hidden[1], ctx.d_hidden[0],
-            ctx.d_networks[28], ctx.d_networks[29], ctx.d_networks[30], ctx.d_networks[31],
-            ctx.d_networks[32], ctx.d_networks[33], ctx.d_networks[34], ctx.d_networks[35],
-            ctx.d_networks[36], ctx.d_networks[37], ctx.d_networks[38], ctx.d_networks[39]);
+            ctx.d_networks[28], ctx.d_networks[29], ctx.d_networks[34], ctx.d_networks[35],
+            ctx.k_linear_prebound[30], ctx.k_linear_prebound[32], ctx.k_linear_gelu_prebound[36], ctx.k_linear_prebound[38]);
 
-		wait_transfer(51);
+        wait_transfer(51);
+        // layer 3 base=40
         Encoder(ctx.d_hidden[0], ctx.d_hidden[1],
-            ctx.d_networks[40], ctx.d_networks[41], ctx.d_networks[42], ctx.d_networks[43],
-            ctx.d_networks[44], ctx.d_networks[45], ctx.d_networks[46], ctx.d_networks[47],
-            ctx.d_networks[48], ctx.d_networks[49], ctx.d_networks[50], ctx.d_networks[51]);
+            ctx.d_networks[40], ctx.d_networks[41], ctx.d_networks[46], ctx.d_networks[47],
+            ctx.k_linear_prebound[42], ctx.k_linear_prebound[44], ctx.k_linear_gelu_prebound[48], ctx.k_linear_prebound[50]);
 
-		wait_transfer(63);
+        wait_transfer(63);
+        // layer 4 base=52
         Encoder(ctx.d_hidden[1], ctx.d_hidden[0],
-            ctx.d_networks[52], ctx.d_networks[53], ctx.d_networks[54], ctx.d_networks[55],
-            ctx.d_networks[56], ctx.d_networks[57], ctx.d_networks[58], ctx.d_networks[59],
-            ctx.d_networks[60], ctx.d_networks[61], ctx.d_networks[62], ctx.d_networks[63]);
+            ctx.d_networks[52], ctx.d_networks[53], ctx.d_networks[58], ctx.d_networks[59],
+            ctx.k_linear_prebound[54], ctx.k_linear_prebound[56], ctx.k_linear_gelu_prebound[60], ctx.k_linear_prebound[62]);
 
-		wait_transfer(75);
+        wait_transfer(75);
+        // layer 5 base=64
         Encoder(ctx.d_hidden[0], ctx.d_hidden[1],
-            ctx.d_networks[64], ctx.d_networks[65], ctx.d_networks[66], ctx.d_networks[67],
-            ctx.d_networks[68], ctx.d_networks[69], ctx.d_networks[70], ctx.d_networks[71],
-            ctx.d_networks[72], ctx.d_networks[73], ctx.d_networks[74], ctx.d_networks[75]);
+            ctx.d_networks[64], ctx.d_networks[65], ctx.d_networks[70], ctx.d_networks[71],
+            ctx.k_linear_prebound[66], ctx.k_linear_prebound[68], ctx.k_linear_gelu_prebound[72], ctx.k_linear_prebound[74]);
 
-		wait_transfer(87);
+        wait_transfer(87);
+        // layer 6 base=76
         Encoder(ctx.d_hidden[1], ctx.d_hidden[0],
-            ctx.d_networks[76], ctx.d_networks[77], ctx.d_networks[78], ctx.d_networks[79],
-            ctx.d_networks[80], ctx.d_networks[81], ctx.d_networks[82], ctx.d_networks[83],
-            ctx.d_networks[84], ctx.d_networks[85], ctx.d_networks[86], ctx.d_networks[87]);
+            ctx.d_networks[76], ctx.d_networks[77], ctx.d_networks[82], ctx.d_networks[83],
+            ctx.k_linear_prebound[78], ctx.k_linear_prebound[80], ctx.k_linear_gelu_prebound[84], ctx.k_linear_prebound[86]);
 
-		wait_transfer(99);
+        wait_transfer(99);
+        // layer 7 base=88
         Encoder(ctx.d_hidden[0], ctx.d_hidden[1],
-            ctx.d_networks[88], ctx.d_networks[89], ctx.d_networks[90], ctx.d_networks[91],
-            ctx.d_networks[92], ctx.d_networks[93], ctx.d_networks[94], ctx.d_networks[95],
-            ctx.d_networks[96], ctx.d_networks[97], ctx.d_networks[98], ctx.d_networks[99]);
+            ctx.d_networks[88], ctx.d_networks[89], ctx.d_networks[94], ctx.d_networks[95],
+            ctx.k_linear_prebound[90], ctx.k_linear_prebound[92], ctx.k_linear_gelu_prebound[96], ctx.k_linear_prebound[98]);
 
-		wait_transfer(111);
+        wait_transfer(111);
+        // layer 8 base=100
         Encoder(ctx.d_hidden[1], ctx.d_hidden[0],
-            ctx.d_networks[100], ctx.d_networks[101], ctx.d_networks[102], ctx.d_networks[103],
-            ctx.d_networks[104], ctx.d_networks[105], ctx.d_networks[106], ctx.d_networks[107],
-            ctx.d_networks[108], ctx.d_networks[109], ctx.d_networks[110], ctx.d_networks[111]);
+            ctx.d_networks[100], ctx.d_networks[101], ctx.d_networks[106], ctx.d_networks[107],
+            ctx.k_linear_prebound[102], ctx.k_linear_prebound[104], ctx.k_linear_gelu_prebound[108], ctx.k_linear_prebound[110]);
 
-		wait_transfer(123);
+        wait_transfer(123);
+        // layer 9 base=112
         Encoder(ctx.d_hidden[0], ctx.d_hidden[1],
-            ctx.d_networks[112], ctx.d_networks[113], ctx.d_networks[114], ctx.d_networks[115],
-            ctx.d_networks[116], ctx.d_networks[117], ctx.d_networks[118], ctx.d_networks[119],
-            ctx.d_networks[120], ctx.d_networks[121], ctx.d_networks[122], ctx.d_networks[123]);
+            ctx.d_networks[112], ctx.d_networks[113], ctx.d_networks[118], ctx.d_networks[119],
+            ctx.k_linear_prebound[114], ctx.k_linear_prebound[116], ctx.k_linear_gelu_prebound[120], ctx.k_linear_prebound[122]);
 
-		wait_transfer(135);
+        wait_transfer(135);
+        // layer 10 base=124
         Encoder(ctx.d_hidden[1], ctx.d_hidden[0],
-            ctx.d_networks[124], ctx.d_networks[125], ctx.d_networks[126], ctx.d_networks[127],
-            ctx.d_networks[128], ctx.d_networks[129], ctx.d_networks[130], ctx.d_networks[131],
-            ctx.d_networks[132], ctx.d_networks[133], ctx.d_networks[134], ctx.d_networks[135]);
+            ctx.d_networks[124], ctx.d_networks[125], ctx.d_networks[130], ctx.d_networks[131],
+            ctx.k_linear_prebound[126], ctx.k_linear_prebound[128], ctx.k_linear_gelu_prebound[132], ctx.k_linear_prebound[134]);
 
-		wait_transfer(147);
+        wait_transfer(147);
+        // layer 11 base=136
         Encoder(ctx.d_hidden[0], ctx.d_hidden[1],
-            ctx.d_networks[136], ctx.d_networks[137], ctx.d_networks[138], ctx.d_networks[139],
-            ctx.d_networks[140], ctx.d_networks[141], ctx.d_networks[142], ctx.d_networks[143],
-            ctx.d_networks[144], ctx.d_networks[145], ctx.d_networks[146], ctx.d_networks[147]);
+            ctx.d_networks[136], ctx.d_networks[137], ctx.d_networks[142], ctx.d_networks[143],
+            ctx.k_linear_prebound[138], ctx.k_linear_prebound[140], ctx.k_linear_gelu_prebound[144], ctx.k_linear_prebound[146]);
 
 		wait_transfer(149);
         layer_norm(ctx.d_hidden[1], ctx.d_hidden[0], ctx.d_networks[148], ctx.d_networks[149]);
@@ -558,8 +627,8 @@ void ViT_seq_sb(ImageData* image, Network* networks, float** probabilities) {
         profile_event(*ctx.evt_ptr, "Extract CLS Token");
 #endif
 
-		wait_transfer(151);
-        linear_layer(ctx.k_linear, ctx.d_cls_tokens, ctx.d_logits, batch_size, embed_dim, num_classes, ctx.d_networks[150], ctx.d_networks[151]);
+        wait_transfer(151);
+        linear_layer_bound(ctx.k_linear_prebound[150], ctx.d_cls_tokens, ctx.d_logits, batch_size, num_classes);
 
         int classes = num_classes;
         err = clSetKernelArg(ctx.k_softmax, 0, sizeof(cl_mem), &ctx.d_logits); CHECK_ERROR(err);
@@ -629,6 +698,13 @@ static void release_kernel() {
 
     clReleaseKernel(ctx.k_patch_embed);
     clReleaseKernel(ctx.k_linear);
+    clReleaseKernel(ctx.k_linear_gelu);
+    // release prebound kernels
+    if (ctx.k_patch_prebound) clReleaseKernel(ctx.k_patch_prebound);
+    for (int i = 0; i < 152; ++i) {
+        if (ctx.k_linear_prebound[i]) clReleaseKernel(ctx.k_linear_prebound[i]);
+        if (ctx.k_linear_gelu_prebound[i]) clReleaseKernel(ctx.k_linear_gelu_prebound[i]);
+    }
     clReleaseKernel(ctx.k_attn_score);
     clReleaseKernel(ctx.k_softmax);
     clReleaseKernel(ctx.k_attn_context);
