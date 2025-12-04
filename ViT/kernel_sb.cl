@@ -417,61 +417,27 @@ __kernel void attn_score(
 }
 
 __kernel void softmax(
-    __global float* input,
-    const int cols,
-    const int total_rows
-) {
-    __local float sdata[256];
+    __global float* scores,
+    const int size) {
 
-    int tid = get_local_id(0);
-    int bid = get_group_id(0);
+    int row = get_global_id(0);
+    int offset = row * size;
 
-    if (bid >= total_rows) return;
-
-    int row_offset = bid * cols;
-    __global float* row_ptr = input + row_offset;
-
-    float local_max = -INFINITY;
-
-    for (int i = tid; i < cols; i += 256) {
-        float val = row_ptr[i];
-        local_max = fmax(local_max, val);
+    float max_val = scores[offset];
+    for (int j = 1; j < size; j++) {
+        float val = scores[offset + j];
+        if (val > max_val) max_val = val;
     }
-    sdata[tid] = local_max;
-    barrier(CLK_LOCAL_MEM_FENCE);
 
-#pragma unroll
-    for (int s = 128; s > 0; s >>= 1) {
-        if (tid < s) {
-            sdata[tid] = fmax(sdata[tid], sdata[tid + s]);
-        }
-        barrier(CLK_LOCAL_MEM_FENCE);
+    float sum_exp = 0.0f;
+    for (int j = 0; j < size; j++) {
+        float exp_val = exp(scores[offset + j] - max_val);
+        scores[offset + j] = exp_val;
+        sum_exp += exp_val;
     }
-    float row_max = sdata[0];
 
-    float local_sum = 0.0f;
-
-    for (int i = tid; i < cols; i += 256) {
-        float val = row_ptr[i];
-        float exp_val = native_exp(val - row_max);
-        row_ptr[i] = exp_val;
-        local_sum += exp_val;
-    }
-    sdata[tid] = local_sum;
-    barrier(CLK_LOCAL_MEM_FENCE);
-
-#pragma unroll
-    for (int s = 128; s > 0; s >>= 1) {
-        if (tid < s) {
-            sdata[tid] += sdata[tid + s];
-        }
-        barrier(CLK_LOCAL_MEM_FENCE);
-    }
-    float row_sum = sdata[0];
-    float inv_sum = native_recip(row_sum);
-
-    for (int i = tid; i < cols; i += 256) {
-        row_ptr[i] *= inv_sum;
+    for (int j = 0; j < size; j++) {
+        scores[offset + j] /= sum_exp;
     }
 }
 
