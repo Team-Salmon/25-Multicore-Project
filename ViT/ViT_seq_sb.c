@@ -43,7 +43,7 @@
 
 #define enc_size tokens * embed_dim
 
-#define PROFILE_MODE
+// #define PROFILE_MODE
 
 typedef struct __cl_context {
     cl_platform_id platform;
@@ -447,7 +447,7 @@ void ViT_seq_sb(ImageData* image, Network* networks, float** probabilities) {
             evt_done[steps] = NULL;
         }
 
-        printf("Processing image %d/%d\n", i + 1, image->n);
+        // printf("Processing image %d/%d\n", i + 1, image->n);
         current_batch_size = (image->n - i) < batch_size ? (image->n - i) : batch_size;
 
         for (int j = 0; j < current_batch_size; j++) {
@@ -641,6 +641,7 @@ static void release_kernel() {
 
     clReleaseCommandQueue(ctx.q_input);
     clReleaseCommandQueue(ctx.q_compute);
+    clReleaseCommandQueue(ctx.q_transfer);
 
     clReleaseContext(ctx.context);
 }
