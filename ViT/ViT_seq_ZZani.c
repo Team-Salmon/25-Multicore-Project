@@ -43,7 +43,7 @@
 
 #define enc_size tokens * embed_dim
 
-// #define PROFILE_MODE
+ //#define PROFILE_MODE
 
 typedef struct __cl_context {
     cl_platform_id platform;
@@ -155,9 +155,11 @@ static void multihead_attn(cl_mem input, cl_mem output,
     err = clSetKernelArg(ctx.k_softmax, 0, sizeof(cl_mem), &ctx.d_attn_map); CHECK_ERROR(err);
     err = clSetKernelArg(ctx.k_softmax, 1, sizeof(int), &token_size); CHECK_ERROR(err);
 
-    size_t gws_softmax = (size_t)tokens * batch_size * num_heads;
+    size_t lws_softmax_cfg = 256;
+    size_t total_rows = (size_t)tokens * batch_size * num_heads;
+    size_t gws_softmax_cfg = total_rows * lws_softmax_cfg;
 
-    err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_softmax, 1, NULL, &gws_softmax, NULL, 0, NULL, ctx.evt_ptr); CHECK_ERROR(err);
+    err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_softmax, 1, NULL, &gws_softmax_cfg, &lws_softmax_cfg, 0, NULL, ctx.evt_ptr); CHECK_ERROR(err);
 #ifdef PROFILE_MODE
     profile_event(*ctx.evt_ptr, "Softmax");
 #endif
@@ -449,7 +451,7 @@ void ViT_seq_ZZani(ImageData* image, Network* networks, float** probabilities) {
             evt_done[steps] = NULL;
         }
 
-        printf("Processing image %d/%d\n", i + 1, image->n);
+        //printf("Processing image %d/%d\n", i + 1, image->n);
         current_batch_size = (image->n - i) < batch_size ? (image->n - i) : batch_size;
 
         for (int j = 0; j < current_batch_size; j++) {
@@ -567,9 +569,10 @@ void ViT_seq_ZZani(ImageData* image, Network* networks, float** probabilities) {
         err = clSetKernelArg(ctx.k_softmax, 0, sizeof(cl_mem), &ctx.d_logits[steps]); CHECK_ERROR(err);
         err = clSetKernelArg(ctx.k_softmax, 1, sizeof(int), &classes); CHECK_ERROR(err);
 
-        size_t gws_softmax = current_batch_size;
+        size_t lws_softmax_final = 256;
+        size_t gws_softmax_final = (size_t)current_batch_size * lws_softmax_final;
 
-        err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_softmax, 1, NULL, &gws_softmax, NULL, 0, NULL, &evt_done[steps]); CHECK_ERROR(err);
+        err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_softmax, 1, NULL, &gws_softmax_final, &lws_softmax_final, 0, NULL, &evt_done[steps]); CHECK_ERROR(err);
 #ifdef PROFILE_MODE
         profile_event(evt_done[steps], "Output Softmax");
 #endif
