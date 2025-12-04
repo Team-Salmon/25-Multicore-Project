@@ -27,7 +27,7 @@ inline void load_weights (
 }
 
 inline void gemm (
-    __local float local_input[LI_LWS_TOKEN * LI_TPT][LI_STRIDE_IN],
+    __local float local_input[LI_STRIDE_IN][LI_LWS_TOKEN * LI_TPT + 4],
     __local float local_weights[LI_TILE][LI_STRIDE_WEIGHT],
     float acc[LI_TPT][LI_OPT],
     int l_token_idx, int l_out_idx) {
@@ -42,26 +42,37 @@ inline void gemm (
         float4 w2 = vload4(2, w_ptr);
         float4 w3 = vload4(3, w_ptr);
 
-        #pragma unroll
-        for (int t = 0; t < LI_TPT; ++t) {
-            int l_row = l_token_idx * LI_TPT + t;
-            
-            float in_val_scalar = local_input[l_row][k];
-            float4 in_val = (float4)(in_val_scalar);
+        float4 in_vals = vload4(0, &local_input[k][l_token_idx * LI_TPT]); 
+        
+        acc_vec_ptr = (float4*)&acc[0][0];
+        acc_vec_ptr[0] = fma((float4)(in_vals.x), w0, acc_vec_ptr[0]);
+        acc_vec_ptr[1] = fma((float4)(in_vals.x), w1, acc_vec_ptr[1]);
+        acc_vec_ptr[2] = fma((float4)(in_vals.x), w2, acc_vec_ptr[2]);
+        acc_vec_ptr[3] = fma((float4)(in_vals.x), w3, acc_vec_ptr[3]);
 
-            acc_vec_ptr = (float4*)&acc[t][0];
+        acc_vec_ptr = (float4*)&acc[1][0];
+        acc_vec_ptr[0] = fma((float4)(in_vals.y), w0, acc_vec_ptr[0]);
+        acc_vec_ptr[1] = fma((float4)(in_vals.y), w1, acc_vec_ptr[1]);
+        acc_vec_ptr[2] = fma((float4)(in_vals.y), w2, acc_vec_ptr[2]);
+        acc_vec_ptr[3] = fma((float4)(in_vals.y), w3, acc_vec_ptr[3]);
 
-            acc_vec_ptr[0] = fma(in_val, w0, acc_vec_ptr[0]);
-            acc_vec_ptr[1] = fma(in_val, w1, acc_vec_ptr[1]);
-            acc_vec_ptr[2] = fma(in_val, w2, acc_vec_ptr[2]);
-            acc_vec_ptr[3] = fma(in_val, w3, acc_vec_ptr[3]);
-        }
+        acc_vec_ptr = (float4*)&acc[2][0];
+        acc_vec_ptr[0] = fma((float4)(in_vals.z), w0, acc_vec_ptr[0]);
+        acc_vec_ptr[1] = fma((float4)(in_vals.z), w1, acc_vec_ptr[1]);
+        acc_vec_ptr[2] = fma((float4)(in_vals.z), w2, acc_vec_ptr[2]);
+        acc_vec_ptr[3] = fma((float4)(in_vals.z), w3, acc_vec_ptr[3]);
+
+        acc_vec_ptr = (float4*)&acc[3][0];
+        acc_vec_ptr[0] = fma((float4)(in_vals.w), w0, acc_vec_ptr[0]);
+        acc_vec_ptr[1] = fma((float4)(in_vals.w), w1, acc_vec_ptr[1]);
+        acc_vec_ptr[2] = fma((float4)(in_vals.w), w2, acc_vec_ptr[2]);
+        acc_vec_ptr[3] = fma((float4)(in_vals.w), w3, acc_vec_ptr[3]);
     }
 }
 
 inline void load_inputs (
     __global const float* input,
-    __local float local_input[LI_LWS_TOKEN * LI_TPT][LI_STRIDE_IN],
+    __local float local_input[LI_STRIDE_IN][LI_LWS_TOKEN * LI_TPT + 4],
     int k_curr, int K, int M,
     int g_token_base, 
     int l_token_idx, 
@@ -75,10 +86,10 @@ inline void load_inputs (
 
         float4 val = vload4(0, &input[g_row * K + (k_curr + k_offset)]);
 
-        local_input[l_row][k_offset + 0] = val.x;
-        local_input[l_row][k_offset + 1] = val.y;
-        local_input[l_row][k_offset + 2] = val.z;
-        local_input[l_row][k_offset + 3] = val.w;
+        local_input[k_offset + 0][l_row] = val.x;
+        local_input[k_offset + 1][l_row] = val.y;
+        local_input[k_offset + 2][l_row] = val.z;
+        local_input[k_offset + 3][l_row] = val.w;
     }
 }
 
@@ -130,7 +141,7 @@ __kernel void linear_default(
     const int K, 
     const int N ) {
 
-    __local float local_input[LI_LWS_TOKEN * LI_TPT][LI_STRIDE_IN];
+    __local float local_input[LI_STRIDE_IN][LI_LWS_TOKEN * LI_TPT];
     __local float local_weights[LI_TILE][LI_STRIDE_WEIGHT];
 
     int l_out_idx = get_local_id(0);
@@ -166,7 +177,7 @@ __kernel void linear_gelu (
     const int K, 
     const int N ) {
 
-    __local float local_input[LI_LWS_TOKEN * LI_TPT][LI_STRIDE_IN];
+    __local float local_input[LI_STRIDE_IN][LI_LWS_TOKEN * LI_TPT + 4];
     __local float local_weights[LI_TILE][LI_STRIDE_WEIGHT];
 
     int l_out_idx = get_local_id(0);
@@ -202,7 +213,7 @@ __kernel void linear_conv2d(
     const int K, 
     const int N ) {
 
-    __local float local_input[LI_LWS_TOKEN * LI_TPT][LI_STRIDE_IN];
+    __local float local_input[LI_STRIDE_IN][LI_LWS_TOKEN * LI_TPT + 4];
     __local float local_weights[LI_TILE][LI_STRIDE_WEIGHT];
 
     int l_out_idx = get_local_id(0);
@@ -257,10 +268,10 @@ __kernel void linear_conv2d(
                 val = vload4(0, &input_img[addr]);
             }
 
-            local_input[l_row][k_offset + 0] = val.x;
-            local_input[l_row][k_offset + 1] = val.y;
-            local_input[l_row][k_offset + 2] = val.z;
-            local_input[l_row][k_offset + 3] = val.w;
+            local_input[k_offset + 0][l_row] = val.x;
+            local_input[k_offset + 1][l_row] = val.y;
+            local_input[k_offset + 2][l_row] = val.z;
+            local_input[k_offset + 3][l_row] = val.w;
         }
 
         load_weights(weights, local_weights, k_curr, K, N, g_out_group_start, l_flat, l_token_idx, l_out_idx);
@@ -275,7 +286,7 @@ __kernel void linear_conv2d(
 
 inline void load_Q(
     __global const float* QKV,
-    __local float local_input[LI_LWS_TOKEN * LI_TPT][LI_STRIDE_IN],
+    __local float local_input[LI_STRIDE_IN][LI_LWS_TOKEN * LI_TPT + 4],
     int k_curr,
     int batch_head_offset, 
     int g_token_base, 
@@ -291,10 +302,10 @@ inline void load_Q(
         int addr = batch_head_offset + (g_row * QKV_DIM) + (k_curr + k_offset);
         float4 val = vload4(0, &QKV[addr]);
 
-        local_input[l_row][k_offset + 0] = val.x;
-        local_input[l_row][k_offset + 1] = val.y;
-        local_input[l_row][k_offset + 2] = val.z;
-        local_input[l_row][k_offset + 3] = val.w;
+        local_input[k_offset + 0][l_row] = val.x;
+        local_input[k_offset + 1][l_row] = val.y;
+        local_input[k_offset + 2][l_row] = val.z;
+        local_input[k_offset + 3][l_row] = val.w;
     }
 }
 
@@ -362,7 +373,7 @@ inline void store_score (
 __kernel void attn_score(
     __global const float* QKV,
     __global float* scores ) {
-    __local float local_input[LI_LWS_TOKEN * LI_TPT][LI_STRIDE_IN];
+    __local float local_input[LI_STRIDE_IN][LI_LWS_TOKEN * LI_TPT + 4];
     __local float local_weights[LI_TILE][LI_STRIDE_WEIGHT];
 
     int l_out_idx = get_local_id(0);

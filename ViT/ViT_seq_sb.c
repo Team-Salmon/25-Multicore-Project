@@ -388,6 +388,12 @@ static void init_kernel(Network* networks) {
     ctx.d_cls_tokens = clCreateBuffer(ctx.context, CL_MEM_READ_ONLY, sizeof(float) * batch_size * embed_dim, NULL, &err); CHECK_ERROR(err);
     ctx.d_logits = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE, sizeof(float) * batch_size * num_classes, NULL, &err); CHECK_ERROR(err);
 
+	
+	clEnqueueFillBuffer(ctx.q_compute, ctx.d_patch, &(float){0}, sizeof(float), 0, sizeof(float)* batch_size* embed_dim* num_patches, 0, NULL, NULL);
+    clEnqueueFillBuffer(ctx.q_compute, ctx.d_logits, &(float){0}, sizeof(float), 0, sizeof(float)* batch_size* num_classes, 0, NULL, NULL);
+	clEnqueueFillBuffer(ctx.q_compute, ctx.d_hidden[0], &(float){0}, sizeof(float), 0, sizeof(float)* batch_size* enc_size, 0, NULL, NULL);
+	clEnqueueFillBuffer(ctx.q_compute, ctx.d_hidden[1], &(float){0}, sizeof(float), 0, sizeof(float)* batch_size* enc_size, 0, NULL, NULL);
+
     ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
     // Set work sizes
 
@@ -579,7 +585,7 @@ void ViT_seq_sb(ImageData* image, Network* networks, float** probabilities) {
 #ifdef PROFILE_MODE
         profile_event(evt_done[steps], "Copy Data");
 #endif
-        //break; // for test purpose, process only one batch
+        // break; // for test purpose, process only one batch
     }
 
     if (evt_done[steps]) {
