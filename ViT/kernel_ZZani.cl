@@ -380,80 +380,79 @@ __kernel void patch_embedding_linear(
 }
 
 __kernel void attn_score(
-    __global const float* restrict QKV,
-    __global float* restrict scores
+    __global const float* QKV,
+    __global float* scores
 ) {
-    int lid = get_local_id(0);
-    int lid_z = get_local_id(2);
+    int l_id = get_local_id(0);
+    int l_z_id = get_local_id(2);
 
-    int group_i = get_group_id(0);
-    int j_vec = get_global_id(1);
-    int z = get_global_id(2);
+    int g_group_idx = get_group_id(0);
+    int g_k_vec_idx = get_global_id(1);
+    int g_batch_head_idx = get_global_id(2);
 
     __local float4 k_cache[256];
-    int cache_offset = lid_z * 64;
+    int l_cache_offset = l_z_id * 64;
 
-    if (z >= BATCH_SIZE * NUM_HEADS) return;
+    if (g_batch_head_idx >= BATCH_SIZE * NUM_HEADS) return;
 
-    int i = group_i * 64 + lid;
-    int j_start = j_vec * 4;
+    int q_token_idx = g_group_idx * 64 + l_id;
+    int k_token_start = g_k_vec_idx * 4;
 
-    int batch_idx = z / NUM_HEADS;
-    int head_idx = z % NUM_HEADS;
+    int batch_idx = g_batch_head_idx / NUM_HEADS;
+    int head_idx = g_batch_head_idx % NUM_HEADS;
+
     int head_offset = head_idx * HEAD_DIM;
     int batch_token_base = batch_idx * TOKENS * QKV_DIM;
-
     int k_base_offset = batch_token_base + EMBED_DIM + head_offset;
 
-    int vec_per_key = HEAD_DIM / 4;
-    int key_idx = lid / vec_per_key;
-    int d_vec = lid % vec_per_key;
+    int vecs_per_head = HEAD_DIM / 4;
+    int key_load_idx = l_id / vecs_per_head;
+    int d_vec = l_id % vecs_per_head;
 
-    int curr_j = j_start + key_idx;
+    int curr_k_token = k_token_start + key_load_idx;
     float4 loaded_k = (float4)(0.0f);
 
-    if (curr_j < TOKENS && key_idx < 4) {
-        int addr = k_base_offset + (curr_j * QKV_DIM) + (d_vec * 4);
-        loaded_k = vload4(0, &QKV[addr]);
+    if (curr_k_token < TOKENS && key_load_idx < 4) {
+        int mem_addr = k_base_offset + (curr_k_token * QKV_DIM) + (d_vec * 4);
+        loaded_k = vload4(0, &QKV[mem_addr]);
     }
 
-    k_cache[cache_offset + lid] = loaded_k;
+    k_cache[l_cache_offset + l_id] = loaded_k;
 
     barrier(CLK_LOCAL_MEM_FENCE);
 
-    if (i < TOKENS) {
-        int q_addr = batch_token_base + (i * QKV_DIM) + head_offset;
-        float4 sum = (float4)(0.0f);
+    if (q_token_idx < TOKENS) {
+        int q_base_offset = batch_token_base + (q_token_idx * QKV_DIM) + head_offset;
+        float4 score_acc = (float4)(0.0f);
 
 #pragma unroll
-        for (int d = 0; d < vec_per_key; ++d) {
-            float4 q_vec = vload4(0, &QKV[q_addr + d * 4]);
+        for (int v = 0; v < vecs_per_head; ++v) {
+            float4 q_vec = vload4(0, &QKV[q_base_offset + v * 4]);
 
-            float4 k0 = k_cache[cache_offset + 0 * vec_per_key + d];
-            float4 k1 = k_cache[cache_offset + 1 * vec_per_key + d];
-            float4 k2 = k_cache[cache_offset + 2 * vec_per_key + d];
-            float4 k3 = k_cache[cache_offset + 3 * vec_per_key + d];
+            float4 k0 = k_cache[l_cache_offset + 0 * vecs_per_head + v];
+            float4 k1 = k_cache[l_cache_offset + 1 * vecs_per_head + v];
+            float4 k2 = k_cache[l_cache_offset + 2 * vecs_per_head + v];
+            float4 k3 = k_cache[l_cache_offset + 3 * vecs_per_head + v];
 
-            sum.x += dot(q_vec, k0);
-            sum.y += dot(q_vec, k1);
-            sum.z += dot(q_vec, k2);
-            sum.w += dot(q_vec, k3);
+            score_acc.x += dot(q_vec, k0);
+            score_acc.y += dot(q_vec, k1);
+            score_acc.z += dot(q_vec, k2);
+            score_acc.w += dot(q_vec, k3);
         }
-        sum *= 0.125f;
+        score_acc *= 0.125f;
 
-        int out_base = (batch_idx * NUM_HEADS + head_idx) * (TOKENS * TOKENS) + (i * TOKENS + j_start);
+        int out_base = (g_batch_head_idx) * (TOKENS * TOKENS) + (q_token_idx * TOKENS + k_token_start);
 
 #if (TOKENS % 4 == 0)
-        vstore4(sum, 0, &scores[out_base]);
+        vstore4(score_acc, 0, &scores[out_base]);
 #else
-        if (j_start < TOKENS) scores[out_base] = sum.x;
-        if (j_start + 1 < TOKENS) scores[out_base + 1] = sum.y;
-        if (j_start + 2 < TOKENS) scores[out_base + 2] = sum.z;
-        if (j_start + 3 < TOKENS) scores[out_base + 3] = sum.w;
+        if (k_token_start < TOKENS) scores[out_base] = score_acc.x;
+        if (k_token_start + 1 < TOKENS) scores[out_base + 1] = score_acc.y;
+        if (k_token_start + 2 < TOKENS) scores[out_base + 2] = score_acc.z;
+        if (k_token_start + 3 < TOKENS) scores[out_base + 3] = score_acc.w;
 #endif
     }
 }
-
 __kernel void softmax(
     __global float* scores,
     const int size) {
