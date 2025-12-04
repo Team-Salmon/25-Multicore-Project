@@ -428,7 +428,6 @@ void ViT_seq_sb(ImageData* image, Network* networks, float** probabilities) {
 
     cl_event evt_input = NULL;
     cl_event evt_done[2] = { NULL, NULL };
-	cl_event evt_output[2] = { NULL, NULL };
 
     init_profiler();
 
@@ -442,13 +441,6 @@ void ViT_seq_sb(ImageData* image, Network* networks, float** probabilities) {
 
     for (int i = 0; i < image->n; i += batch_size) {
         steps = (i / batch_size) % 2;
-
-        if (evt_output[steps] != NULL) {
-            clWaitForEvents(1, &evt_output[steps]);
-
-            clReleaseEvent(evt_output[steps]);
-            evt_output[steps] = NULL;
-        }
 
         if (evt_done[steps] != NULL) { // double buffering
             clWaitForEvents(1, &evt_done[steps]);
@@ -577,19 +569,21 @@ void ViT_seq_sb(ImageData* image, Network* networks, float** probabilities) {
 
         size_t gws_softmax = current_batch_size;
 
-        err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_softmax, 1, NULL, &gws_softmax, NULL, 0, NULL, ctx.evt_ptr); CHECK_ERROR(err);
+        err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_softmax, 1, NULL, &gws_softmax, NULL, 0, NULL, &evt_done[steps]); CHECK_ERROR(err);
 #ifdef PROFILE_MODE
-        profile_event(*ctx.evt_ptr, "Output Softmax");
+        profile_event(evt_done[steps], "Output Softmax");
 #endif
 
 		float* probs_ptr = &probs[i * num_classes];
         size_t output_bytes = sizeof(float) * num_classes * current_batch_size;
 
-		err = clEnqueueReadBuffer(ctx.q_compute, ctx.d_logits[steps], CL_FALSE, 0, output_bytes, probs_ptr, 0, NULL, &evt_done[steps]); CHECK_ERROR(err);
+		clEnqueueBarrierWithWaitList(ctx.q_output, 1, &evt_done[steps], NULL);
+		err = clEnqueueReadBuffer(ctx.q_output, ctx.d_logits[steps], CL_FALSE, 0, output_bytes, probs_ptr, 0, NULL, NULL); CHECK_ERROR(err);
+
 #ifdef PROFILE_MODE
         profile_event(evt_done[steps], "Copy Data");
 #endif
-        break; // for test purpose, process only one batch
+        // break; // for test purpose, process only one batch
     }
 
 	for (int s = 0; s < 2; s++) {
@@ -600,12 +594,11 @@ void ViT_seq_sb(ImageData* image, Network* networks, float** probabilities) {
         }
     }
 
-    clEnqueueUnmapMemObject(ctx.q_compute, d_results, probs, 0, NULL, NULL);
-
 #ifdef PROFILE_MODE
     profile_event(*ctx.evt_ptr, "Copy Data");
 #endif
 
+    clFinish(ctx.q_output);
     for (int k = 0; k < image->n; k++) {
         memcpy(probabilities[k], &probs[k * num_classes], sizeof(float) * num_classes);
     }
