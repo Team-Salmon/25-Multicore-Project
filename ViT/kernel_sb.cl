@@ -105,10 +105,10 @@ inline void store_linear (
     int gelu ) {
     if (g_out_base >= N || g_token_base >= M) return;
 
-    float4 b0 = vload4(0, &bias[g_out_base + 0]);
-    float4 b1 = vload4(0, &bias[g_out_base + 4]);
-    float4 b2 = vload4(0, &bias[g_out_base + 8]);
-    float4 b3 = vload4(0, &bias[g_out_base + 12]);
+    float4 b0 = (g_out_base + 0 < N) ? vload4(0, &bias[g_out_base + 0]) : (float4)(0.0f);
+    float4 b1 = (g_out_base + 4 < N) ? vload4(0, &bias[g_out_base + 4]) : (float4)(0.0f);
+    float4 b2 = (g_out_base + 8 < N) ? vload4(0, &bias[g_out_base + 8]) : (float4)(0.0f);
+    float4 b3 = (g_out_base + 12 < N) ? vload4(0, &bias[g_out_base + 12]) : (float4)(0.0f);
 
     #pragma unroll
     for (int t = 0; t < LI_TPT; ++t) {
