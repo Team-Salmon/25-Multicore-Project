@@ -57,9 +57,6 @@ typedef struct __cl_context {
     cl_program program;
 
     cl_kernel k_patch_embed;
-    size_t    gws_patch[3];
-    size_t    lws_patch[3];
-
     cl_kernel k_pos_emb;
 
     cl_kernel k_linear;
@@ -388,18 +385,8 @@ static void init_kernel(Network* networks) {
     ctx.d_cls_tokens = clCreateBuffer(ctx.context, CL_MEM_READ_ONLY, sizeof(float) * batch_size * embed_dim, NULL, &err); CHECK_ERROR(err);
     ctx.d_logits = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE, sizeof(float) * batch_size * num_classes, NULL, &err); CHECK_ERROR(err);
 
-	
-	clEnqueueFillBuffer(ctx.q_compute, ctx.d_patch, &(float){0}, sizeof(float), 0, sizeof(float)* batch_size* embed_dim* num_patches, 0, NULL, NULL);
-    clEnqueueFillBuffer(ctx.q_compute, ctx.d_logits, &(float){0}, sizeof(float), 0, sizeof(float)* batch_size* num_classes, 0, NULL, NULL);
-	clEnqueueFillBuffer(ctx.q_compute, ctx.d_hidden[0], &(float){0}, sizeof(float), 0, sizeof(float)* batch_size* enc_size, 0, NULL, NULL);
-	clEnqueueFillBuffer(ctx.q_compute, ctx.d_hidden[1], &(float){0}, sizeof(float), 0, sizeof(float)* batch_size* enc_size, 0, NULL, NULL);
-
     ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
     // Set work sizes
-
-    set_size_3d(ctx.gws_patch, embed_dim, num_patches, batch_size);
-    set_size_3d(ctx.lws_patch, 4, 4, 4);
-    padding_size(ctx.gws_patch, ctx.lws_patch, 3);
 
     set_size_2d(ctx.lws_linear, 4, 64);
 
