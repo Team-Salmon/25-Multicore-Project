@@ -169,7 +169,7 @@ static void multihead_attn(cl_mem input, cl_mem output,
     err = clSetKernelArg(ctx.k_attn_context, 1, sizeof(cl_mem), &ctx.d_qkv); CHECK_ERROR(err);
     err = clSetKernelArg(ctx.k_attn_context, 2, sizeof(cl_mem), &ctx.d_context_vec); CHECK_ERROR(err);
 
-    size_t lws_context[3] = { 8, 16, 1 };
+    size_t lws_context[3] = { 4, 16, 1 };
     size_t gws_context[3] = {
         (size_t)((tokens + 3) / 4),
         (size_t)head_dim / 4,
@@ -447,7 +447,7 @@ void ViT_seq_sb(ImageData* image, Network* networks, float** probabilities) {
             evt_done[steps] = NULL;
         }
 
-        // printf("Processing image %d/%d\n", i + 1, image->n);
+        printf("Processing image %d/%d\n", i + 1, image->n);
         current_batch_size = (image->n - i) < batch_size ? (image->n - i) : batch_size;
 
         for (int j = 0; j < current_batch_size; j++) {
