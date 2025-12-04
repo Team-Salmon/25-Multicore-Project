@@ -43,7 +43,7 @@
 
 #define enc_size tokens * embed_dim
 
-#define PROFILE_MODE
+// #define PROFILE_MODE
 
 typedef struct __cl_context {
     cl_platform_id platform;
@@ -153,17 +153,13 @@ static void multihead_attn(cl_mem input, cl_mem output,
 
     // Softmax °è»ê
 
-    int attn_rows = batch_size * num_heads * tokens;
-    int attn_cols = tokens;
-
+    int token_size = tokens;
     err = clSetKernelArg(ctx.k_softmax, 0, sizeof(cl_mem), &ctx.d_attn_map); CHECK_ERROR(err);
-    err = clSetKernelArg(ctx.k_softmax, 1, sizeof(int), &attn_cols); CHECK_ERROR(err);
-    err = clSetKernelArg(ctx.k_softmax, 2, sizeof(int), &attn_rows); CHECK_ERROR(err);
+    err = clSetKernelArg(ctx.k_softmax, 1, sizeof(int), &token_size); CHECK_ERROR(err);
 
-    size_t lws_softmax = 256;
-    size_t gws_softmax = (size_t)attn_rows * lws_softmax;
+    size_t gws_softmax = (size_t)tokens * batch_size * num_heads;
 
-    err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_softmax, 1, NULL, &gws_softmax, &lws_softmax, 0, NULL, ctx.evt_ptr); CHECK_ERROR(err);
+    err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_softmax, 1, NULL, &gws_softmax, NULL, 0, NULL, ctx.evt_ptr); CHECK_ERROR(err);
 #ifdef PROFILE_MODE
     profile_event(*ctx.evt_ptr, "Softmax");
 #endif
@@ -173,9 +169,9 @@ static void multihead_attn(cl_mem input, cl_mem output,
     err = clSetKernelArg(ctx.k_attn_context, 1, sizeof(cl_mem), &ctx.d_qkv); CHECK_ERROR(err);
     err = clSetKernelArg(ctx.k_attn_context, 2, sizeof(cl_mem), &ctx.d_context_vec); CHECK_ERROR(err);
 
-    size_t lws_context[3] = { 32, 16, 1 };
+    size_t lws_context[3] = { 4, 16, 1 };
     size_t gws_context[3] = {
-        (size_t)tokens,
+        (size_t)((tokens + 3) / 4),
         (size_t)head_dim / 4,
         (size_t)batch_size * num_heads
     };
@@ -565,18 +561,13 @@ void ViT_seq_sb(ImageData* image, Network* networks, float** probabilities) {
 		wait_transfer(151);
         linear_layer(ctx.k_linear, ctx.d_cls_tokens, ctx.d_logits, batch_size, embed_dim, num_classes, ctx.d_networks[150], ctx.d_networks[151]);
 
-        int out_rows = current_batch_size;
-        int out_cols = num_classes;
-
+        int classes = num_classes;
         err = clSetKernelArg(ctx.k_softmax, 0, sizeof(cl_mem), &ctx.d_logits); CHECK_ERROR(err);
-        err = clSetKernelArg(ctx.k_softmax, 1, sizeof(int), &out_cols); CHECK_ERROR(err);
-        err = clSetKernelArg(ctx.k_softmax, 2, sizeof(int), &out_rows); CHECK_ERROR(err);
+        err = clSetKernelArg(ctx.k_softmax, 1, sizeof(int), &classes); CHECK_ERROR(err);
 
-        size_t lws_out_softmax = 256;
-        size_t gws_out_softmax = (size_t)out_rows * lws_out_softmax;
-        if (gws_out_softmax == 0) gws_out_softmax = 256;
+        size_t gws_softmax = current_batch_size;
 
-        err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_softmax, 1, NULL, &gws_out_softmax, &lws_out_softmax, 0, NULL, ctx.evt_ptr); CHECK_ERROR(err);
+        err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_softmax, 1, NULL, &gws_softmax, NULL, 0, NULL, ctx.evt_ptr); CHECK_ERROR(err);
 #ifdef PROFILE_MODE
         profile_event(*ctx.evt_ptr, "Output Softmax");
 #endif
@@ -650,6 +641,7 @@ static void release_kernel() {
 
     clReleaseCommandQueue(ctx.q_input);
     clReleaseCommandQueue(ctx.q_compute);
+    clReleaseCommandQueue(ctx.q_transfer);
 
     clReleaseContext(ctx.context);
 }

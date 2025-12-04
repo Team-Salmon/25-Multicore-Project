@@ -48,22 +48,29 @@ inline void gemm (
     float acc[LI_TPT][LI_OPT],
     int l_token_idx, int l_out_idx) {
 
+    float4* acc_vec_ptr;
+
     for (int k = 0; k < LI_TILE; ++k) {
-        float w_cache[LI_OPT];
-        int l_col_base = l_out_idx * LI_OPT;
+        __local float* w_ptr = &tile_weights[k][l_out_idx * LI_OPT];
         
-        #pragma unroll
-        for (int c = 0; c < LI_OPT; ++c) w_cache[c] = tile_weights[k][l_col_base + c];
+        float4 w0 = vload4(0, w_ptr);      // 0~3
+        float4 w1 = vload4(1, w_ptr);      // 4~7
+        float4 w2 = vload4(2, w_ptr);      // 8~11
+        float4 w3 = vload4(3, w_ptr);      // 12~15
 
         #pragma unroll
         for (int t = 0; t < LI_TPT; ++t) {
             int l_row = l_token_idx * LI_TPT + t;
-            float in_val = tile_input[l_row][k];
             
-            #pragma unroll
-            for (int c = 0; c < LI_OPT; ++c) {
-                acc[t][c] = fma(in_val, w_cache[c], acc[t][c]);
-            }
+            float in_val_scalar = tile_input[l_row][k];
+            float4 in_val = (float4)(in_val_scalar);
+
+            acc_vec_ptr = (float4*)&acc[t][0];
+
+            acc_vec_ptr[0] = fma(in_val, w0, acc_vec_ptr[0]);
+            acc_vec_ptr[1] = fma(in_val, w1, acc_vec_ptr[1]);
+            acc_vec_ptr[2] = fma(in_val, w2, acc_vec_ptr[2]);
+            acc_vec_ptr[3] = fma(in_val, w3, acc_vec_ptr[3]);
         }
     }
 }
@@ -427,96 +434,99 @@ __kernel void attn_score(
 }
 
 __kernel void softmax(
-    __global float* input,
-    const int cols,
-    const int total_rows
-) {
-    __local float sdata[256];
+    __global float* scores,
+    const int size) {
 
-    int tid = get_local_id(0);
-    int bid = get_group_id(0);
+    int row = get_global_id(0);
+    int offset = row * size;
 
-    if (bid >= total_rows) return;
-
-    int row_offset = bid * cols;
-    __global float* row_ptr = input + row_offset;
-
-    float local_max = -INFINITY;
-
-    for (int i = tid; i < cols; i += 256) {
-        float val = row_ptr[i];
-        local_max = fmax(local_max, val);
+    float max_val = scores[offset];
+    for (int j = 1; j < size; j++) {
+        float val = scores[offset + j];
+        if (val > max_val) max_val = val;
     }
-    sdata[tid] = local_max;
-    barrier(CLK_LOCAL_MEM_FENCE);
 
-#pragma unroll
-    for (int s = 128; s > 0; s >>= 1) {
-        if (tid < s) {
-            sdata[tid] = fmax(sdata[tid], sdata[tid + s]);
-        }
-        barrier(CLK_LOCAL_MEM_FENCE);
+    float sum_exp = 0.0f;
+    for (int j = 0; j < size; j++) {
+        float exp_val = exp(scores[offset + j] - max_val);
+        scores[offset + j] = exp_val;
+        sum_exp += exp_val;
     }
-    float row_max = sdata[0];
 
-    float local_sum = 0.0f;
-
-    for (int i = tid; i < cols; i += 256) {
-        float val = row_ptr[i];
-        float exp_val = native_exp(val - row_max);
-        row_ptr[i] = exp_val;
-        local_sum += exp_val;
-    }
-    sdata[tid] = local_sum;
-    barrier(CLK_LOCAL_MEM_FENCE);
-
-#pragma unroll
-    for (int s = 128; s > 0; s >>= 1) {
-        if (tid < s) {
-            sdata[tid] += sdata[tid + s];
-        }
-        barrier(CLK_LOCAL_MEM_FENCE);
-    }
-    float row_sum = sdata[0];
-    float inv_sum = native_recip(row_sum);
-
-    for (int i = tid; i < cols; i += 256) {
-        row_ptr[i] *= inv_sum;
+    for (int j = 0; j < size; j++) {
+        scores[offset + j] /= sum_exp;
     }
 }
 
 __kernel void attn_context(
     __global const float* scores,
     __global const float* QKV,
-    __global float* attn_out) {
+    __global float* attn_out
+) {
+    const int g_row_block = get_global_id(0);
+    const int g_dim_idx = get_global_id(1);
+    const int g_batch_head_idx = get_global_id(2);
 
-    int i = get_global_id(0);
-    int d = get_global_id(1);
-    int z = get_global_id(2);
+    const int row_base = g_row_block << 2;
 
-    int d_start = d * 4;
-    int batch_idx = z / NUM_HEADS;
-    int head_idx = z % NUM_HEADS;
+    if (row_base >= TOKENS) return;
 
-    if (i >= TOKENS || d >= HEAD_DIM || batch_idx >= BATCH_SIZE) return;
+    const int batch_idx = g_batch_head_idx / NUM_HEADS;
+    const int head_idx = g_batch_head_idx % NUM_HEADS;
 
-    int score_base = (batch_idx * NUM_HEADS + head_idx) * (TOKENS * TOKENS) + i * TOKENS;
-    int v_base_offset = 2 * EMBED_DIM + head_idx * HEAD_DIM + d_start;
-    int qkv_batch_base = batch_idx * TOKENS * QKV_DIM;
+    const int d_offset = g_dim_idx << 2;
+    const int head_dim_offset = head_idx * HEAD_DIM;
+    const int batch_offset = batch_idx * TOKENS;
 
-    float4 sum = (float4)(0.0f);
+    const int score_head_offset = g_batch_head_idx * TOKENS * TOKENS;
+    const __global float* s_ptr_base = scores + score_head_offset + row_base * TOKENS;
+
+    const int qkv_base = batch_offset * QKV_DIM;
+    const int v_offset = (EMBED_DIM << 1) + head_dim_offset + d_offset;
+    const __global float* v_ptr = QKV + qkv_base + v_offset;
+
+    float4 acc0 = (float4)(0.0f);
+    float4 acc1 = (float4)(0.0f);
+    float4 acc2 = (float4)(0.0f);
+    float4 acc3 = (float4)(0.0f);
+
+    const __global float* s_ptr0 = s_ptr_base;
+    const __global float* s_ptr1 = s_ptr_base + TOKENS;
+    const __global float* s_ptr2 = s_ptr_base + (TOKENS << 1);
+    const __global float* s_ptr3 = s_ptr_base + (TOKENS * 3);
+
+    const bool r1_valid = (row_base + 1 < TOKENS);
+    const bool r2_valid = (row_base + 2 < TOKENS);
+    const bool r3_valid = (row_base + 3 < TOKENS);
 
     for (int j = 0; j < TOKENS; ++j) {
-        float s = scores[score_base + j];
+        float4 v_val = vload4(0, v_ptr);
+        v_ptr += QKV_DIM;
 
-        int v_idx = qkv_batch_base + j * QKV_DIM + v_base_offset;
-        float4 v = vload4(0, &QKV[v_idx]);
+        float s0 = *s_ptr0++;
+        acc0 = fma(v_val, (float4)(s0), acc0);
 
-        sum += s * v;
+        if (r1_valid) {
+            float s1 = *s_ptr1++;
+            acc1 = fma(v_val, (float4)(s1), acc1);
+        }
+        if (r2_valid) {
+            float s2 = *s_ptr2++;
+            acc2 = fma(v_val, (float4)(s2), acc2);
+        }
+        if (r3_valid) {
+            float s3 = *s_ptr3++;
+            acc3 = fma(v_val, (float4)(s3), acc3);
+        }
     }
 
-    int out_idx = (batch_idx * TOKENS + i) * EMBED_DIM + (head_idx * HEAD_DIM + d_start);
-    vstore4(sum, 0, &attn_out[out_idx]);
+    const int out_base = (batch_offset + row_base) * EMBED_DIM + head_dim_offset + d_offset;
+    __global float* out_ptr = attn_out + out_base;
+
+    vstore4(acc0, 0, out_ptr);
+    if (r1_valid) vstore4(acc1, 0, out_ptr + EMBED_DIM);
+    if (r2_valid) vstore4(acc2, 0, out_ptr + (EMBED_DIM << 1));
+    if (r3_valid) vstore4(acc3, 0, out_ptr + (EMBED_DIM * 3));
 }
 
 __kernel void layer_norm(

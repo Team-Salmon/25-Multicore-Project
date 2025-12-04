@@ -171,7 +171,7 @@ static void multihead_attn(cl_mem input, cl_mem output,
 #endif
 
     // Context Vector
-err = clSetKernelArg(ctx.k_attn_context, 0, sizeof(cl_mem), &ctx.d_attn_map); CHECK_ERROR(err);
+    err = clSetKernelArg(ctx.k_attn_context, 0, sizeof(cl_mem), &ctx.d_attn_map); CHECK_ERROR(err);
     err = clSetKernelArg(ctx.k_attn_context, 1, sizeof(cl_mem), &ctx.d_qkv); CHECK_ERROR(err);
     err = clSetKernelArg(ctx.k_attn_context, 2, sizeof(cl_mem), &ctx.d_context_vec); CHECK_ERROR(err);
 
