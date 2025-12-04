@@ -453,12 +453,17 @@ __kernel void softmax(
     float row_max = sdata[0];
 
     float local_sum = 0.0f;
+    float c = 0.0f;
 
     for (int i = tid; i < cols; i += 256) {
         float val = row_ptr[i];
-        float exp_val = native_exp(val - row_max);
+        float exp_val = exp(val - row_max);
         row_ptr[i] = exp_val;
-        local_sum += exp_val;
+
+        float y = exp_val - c;
+        float t = local_sum + y;
+        c = (t - local_sum) - y;
+        local_sum = t;
     }
     sdata[tid] = local_sum;
     barrier(CLK_LOCAL_MEM_FENCE);
@@ -471,7 +476,7 @@ __kernel void softmax(
         barrier(CLK_LOCAL_MEM_FENCE);
     }
     float row_sum = sdata[0];
-    float inv_sum = native_recip(row_sum);
+    float inv_sum = 1.0f / row_sum;
 
     for (int i = tid; i < cols; i += 256) {
         row_ptr[i] *= inv_sum;
