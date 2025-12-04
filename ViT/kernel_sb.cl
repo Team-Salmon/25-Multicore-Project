@@ -19,12 +19,11 @@ inline float4 gelu4(float4 x) {
     return 0.5f * x * (1.0f + erf);
 }
 
-inline void load_weights(
+inline void load_weights (
     __global const float* weights,
     __local float tile_weights[LI_TILE][LI_STRIDE_WEIGHT],
     int k_curr, int K, int N,
-    int g_out_group_start, int l_flat, int l_token_idx, int l_out_idx
-) {
+    int g_out_group_start, int l_flat, int l_token_idx, int l_out_idx ) {
     #pragma unroll
     for (int i = 0; i < 2; ++i) {
         int load_idx = l_flat * 2 + i;
@@ -39,7 +38,7 @@ inline void load_weights(
     }
 }
 
-inline void gemm(
+inline void gemm (
     __local float tile_input[LI_LWS_TOKEN * LI_TPT][LI_STRIDE_IN],
     __local float tile_weights[LI_TILE][LI_STRIDE_WEIGHT],
     float acc[LI_TPT][LI_OPT],
@@ -65,7 +64,7 @@ inline void gemm(
     }
 }
 
-inline void load_inputs(
+inline void load_inputs (
     __global const float* input,
     __local float tile_input[LI_LWS_TOKEN * LI_TPT][LI_STRIDE_IN],
     int k_curr, int K, int M,
@@ -92,7 +91,7 @@ inline void load_inputs(
     }
 }
 
-inline void store_result(
+inline void store_result (
     __global float* output,
     __global const float* bias,
     float acc[LI_TPT][LI_OPT],
@@ -160,7 +159,7 @@ __kernel void linear_default(
     store_result(output, bias, acc, g_token_base, g_out_base, M, N, 0);
 }
 
-__kernel void linear_gelu(
+__kernel void linear_gelu (
     __global const float* input,
     __global float* output,
     __global const float* weights,
@@ -276,81 +275,146 @@ __kernel void linear_conv2d(
     store_result(output, bias, acc, g_token_base, g_out_base, M, N, 0);
 }
 
-__kernel void attn_score(
-    __global const float* restrict QKV,
-    __global float* restrict scores
-) {
-    int lid = get_local_id(0);
-    int lid_z = get_local_id(2);
+inline void load_Q(
+    __global const float* QKV,
+    __local float tile_input[LI_LWS_TOKEN * LI_TPT][LI_STRIDE_IN],
+    int k_curr,
+    int batch_head_offset, 
+    int g_token_base, 
+    int l_token_idx, 
+    int l_out_idx ) {
 
-    int group_i = get_group_id(0);
-    int j_vec = get_global_id(1);
-    int z = get_global_id(2);
+    #pragma unroll
+    for (int t = 0; t < LI_TPT; ++t) {
+        int l_row = l_token_idx * LI_TPT + t;
+        int g_row = g_token_base + t;
+        int k_offset = l_out_idx * 4;
 
-    __local float4 k_cache[256];
-    int cache_offset = lid_z * 64;
-
-    if (z >= BATCH_SIZE * NUM_HEADS) return;
-
-    int i = group_i * 64 + lid;
-    int j_start = j_vec * 4;
-
-    int batch_idx = z / NUM_HEADS;
-    int head_idx = z % NUM_HEADS;
-    int head_offset = head_idx * HEAD_DIM;
-    int batch_token_base = batch_idx * TOKENS * QKV_DIM;
-
-    int k_base_offset = batch_token_base + EMBED_DIM + head_offset;
-
-    int vec_per_key = HEAD_DIM / 4;
-    int key_idx = lid / vec_per_key;
-    int d_vec = lid % vec_per_key;
-
-    int curr_j = j_start + key_idx;
-    float4 loaded_k = (float4)(0.0f);
-
-    if (curr_j < TOKENS && key_idx < 4) {
-        int addr = k_base_offset + (curr_j * QKV_DIM) + (d_vec * 4);
-        loaded_k = vload4(0, &QKV[addr]);
-    }
-
-    k_cache[cache_offset + lid] = loaded_k;
-
-    barrier(CLK_LOCAL_MEM_FENCE);
-
-    if (i < TOKENS) {
-        int q_addr = batch_token_base + (i * QKV_DIM) + head_offset;
-        float4 sum = (float4)(0.0f);
-
-#pragma unroll
-        for (int d = 0; d < vec_per_key; ++d) {
-            float4 q_vec = vload4(0, &QKV[q_addr + d * 4]);
-
-            float4 k0 = k_cache[cache_offset + 0 * vec_per_key + d];
-            float4 k1 = k_cache[cache_offset + 1 * vec_per_key + d];
-            float4 k2 = k_cache[cache_offset + 2 * vec_per_key + d];
-            float4 k3 = k_cache[cache_offset + 3 * vec_per_key + d];
-
-            sum.x += dot(q_vec, k0);
-            sum.y += dot(q_vec, k1);
-            sum.z += dot(q_vec, k2);
-            sum.w += dot(q_vec, k3);
+        float4 val = (float4)0.0f;
+        
+        if (g_row < TOKENS && (k_curr + k_offset) < HEAD_DIM) {
+            int addr = batch_head_offset + (g_row * QKV_DIM) + (k_curr + k_offset);
+            val = vload4(0, &QKV[addr]);
         }
-        sum *= 0.125f;
 
-        int out_base = (batch_idx * NUM_HEADS + head_idx) * (TOKENS * TOKENS) + (i * TOKENS + j_start);
-
-#if (TOKENS % 4 == 0)
-        vstore4(sum, 0, &scores[out_base]);
-#else
-        if (j_start < TOKENS) scores[out_base] = sum.x;
-        if (j_start + 1 < TOKENS) scores[out_base + 1] = sum.y;
-        if (j_start + 2 < TOKENS) scores[out_base + 2] = sum.z;
-        if (j_start + 3 < TOKENS) scores[out_base + 3] = sum.w;
-#endif
+        tile_input[l_row][k_offset + 0] = val.x;
+        tile_input[l_row][k_offset + 1] = val.y;
+        tile_input[l_row][k_offset + 2] = val.z;
+        tile_input[l_row][k_offset + 3] = val.w;
     }
 }
 
+inline void load_K (
+    __global const float* QKV,
+    __local float tile_weights[LI_TILE][LI_STRIDE_WEIGHT],
+    int k_curr,
+    int batch_head_offset,
+    int g_out_group_start, 
+    int l_flat, int 
+    l_token_idx, 
+    int l_out_idx ) {
+
+    int k_start_offset = batch_head_offset + EMBED_DIM; 
+
+    #pragma unroll
+    for (int i = 0; i < 2; ++i) {
+        int load_idx = l_flat * 2 + i;
+        int w_r = load_idx & (LI_TILE - 1);
+        int w_c = load_idx >> 4;
+
+        int target_token = g_out_group_start + w_c;
+        int target_dim = k_curr + w_r; 
+
+        if (target_dim < HEAD_DIM && target_token < TOKENS) {
+            int addr = k_start_offset + (target_token * QKV_DIM) + target_dim;
+            
+            tile_weights[w_r][w_c] = QKV[addr];
+        } else {
+            tile_weights[w_r][w_c] = 0.0f;
+        }
+    }
+}
+
+inline void store_score(
+    __global float* scores,
+    float acc[LI_TPT][LI_OPT],
+    int g_token_base, 
+    int g_out_base,
+    int batch_head_idx ) {
+
+    if (g_token_base >= TOKENS) return;
+
+    int out_global_offset = batch_head_idx * (TOKENS * TOKENS);
+    const float scale = 0.125f;
+
+    #pragma unroll
+    for (int t = 0; t < LI_TPT; ++t) {
+        int curr_g_token = g_token_base + t;
+        
+        if (curr_g_token < TOKENS) {
+            float vals[8];
+
+            #pragma unroll
+            for (int i = 0; i < 8; i++) {
+                vals[i] = acc[t][i] * scale;
+            }
+
+            int row_start = out_global_offset + curr_g_token * TOKENS;
+            int col_idx = g_out_base;
+
+            #pragma unroll
+            for (int i = 0; i < 8; ++i) {
+                if (col_idx + i < TOKENS) {
+                    scores[row_start + col_idx + i] = vals[i];
+                } else {
+                    break;
+                }
+            }
+        }
+    }
+}
+
+__kernel void attn_score(
+    __global const float* QKV,
+    __global float* scores ) {
+    __local float tile_input[LI_LWS_TOKEN * LI_TPT][LI_STRIDE_IN];
+    __local float tile_weights[LI_TILE][LI_STRIDE_WEIGHT];
+
+    int l_out_idx = get_local_id(0);
+    int l_token_idx = get_local_id(1);
+    
+    int g_out_base = (get_group_id(0) * LI_LWS_OUT + l_out_idx) * LI_OPT; // Target Tokens
+    int g_token_base = (get_group_id(1) * LI_LWS_TOKEN + l_token_idx) * LI_TPT; // Source Tokens
+    
+    int batch_head_idx = get_global_id(2); 
+    int batch_idx = batch_head_idx / NUM_HEADS;
+    int head_idx = batch_head_idx % NUM_HEADS;
+
+    int batch_token_base = batch_idx * TOKENS * QKV_DIM;
+    int head_offset = head_idx * HEAD_DIM;
+    int cur_bh_offset = batch_token_base + head_offset;
+
+    float acc[LI_TPT][LI_OPT];
+    #pragma unroll
+    for (int t = 0; t < LI_TPT; ++t)
+        for (int c = 0; c < LI_OPT; ++c) acc[t][c] = 0.0f;
+
+    int g_out_group_start = get_group_id(0) * LI_LWS_OUT * LI_OPT;
+    int l_flat = l_token_idx * LI_LWS_OUT + l_out_idx;
+
+    for (int k_curr = 0; k_curr < HEAD_DIM; k_curr += LI_TILE) {
+        load_Q(QKV, tile_input, k_curr, cur_bh_offset, g_token_base, l_token_idx, l_out_idx);
+        load_K(QKV, tile_weights, k_curr, cur_bh_offset, g_out_group_start, l_flat, l_token_idx, l_out_idx);
+        
+        barrier(CLK_LOCAL_MEM_FENCE);
+
+        gemm(tile_input, tile_weights, acc, l_token_idx, l_out_idx);
+        
+        barrier(CLK_LOCAL_MEM_FENCE);
+    }
+
+    store_score(scores, acc, g_token_base, g_out_base, batch_head_idx);
+}
 
 __kernel void softmax(
     __global float* scores,

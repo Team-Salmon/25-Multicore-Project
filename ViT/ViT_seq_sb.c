@@ -139,12 +139,13 @@ static void multihead_attn(cl_mem input, cl_mem output,
     err = clSetKernelArg(ctx.k_attn_score, 0, sizeof(cl_mem), &ctx.d_qkv); CHECK_ERROR(err);
     err = clSetKernelArg(ctx.k_attn_score, 1, sizeof(cl_mem), &ctx.d_attn_map); CHECK_ERROR(err);
 
-    size_t lws_attn_score[3] = { 64, 1, 4 };
+    size_t lws_attn_score[3] = { ctx.lws_linear[0], ctx.lws_linear[1], 1 };
     size_t gws_attn_score[3] = {
-        (size_t)tokens,
-        (size_t)((tokens + 3) / 4),
+        (size_t)(tokens + li_opt - 1) / li_opt,
+        (size_t)(tokens + li_tpt - 1) / li_tpt,
         (size_t)batch_size * num_heads
     };
+
     padding_size(gws_attn_score, lws_attn_score, 3);
 
     err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_attn_score, 3, NULL, gws_attn_score, lws_attn_score, 0, NULL, ctx.evt_ptr); CHECK_ERROR(err);
