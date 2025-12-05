@@ -14,31 +14,25 @@ inline void load_weights (
     int l_row,
     int l_col ) {
 
-    l_col <<= 2; // 0, 4, 8, 12 (벡터 로딩으로 4개씩 처리)
+    l_col <<= 2;
 
-    // LI_TILE(32)을 채우기 위해 16씩 건너뛰며 2번 반복 (0~15, 16~31)
     #pragma unroll
-    for (int k_off = 0; k_off < 32; k_off += 16) {
-        
-        int curr_l_col = l_col + k_off; // 로컬 메모리의 세로(Depth) 인덱스
-        int g_col = g_col_base + curr_l_col; // 글로벌 메모리의 K 인덱스
+    for (int loop = 0; loop < 2; loop ++) {
+        int col = l_col + (loop << 4);
+        int g_col = g_col_base + col;
 
-        // [수정] 불필요한 내부 루프(i) 제거. l_row가 이미 0~63을 커버함.
         int row = l_row; 
-        int g_row = g_row_base + row; // g_row_base는 N방향 시작점
+        int g_row = g_row_base + row;
 
         float4 val = (float4)0.0f;
         if (g_row < N && g_col < K) {
-             // weights는 [N][K]라고 가정 시, vload4는 연속된 K 4개를 읽음
             val = vload4(0, &weights[g_row * K + g_col]);
         }
 
-        // 로컬 메모리 [Depth][Width] 에 저장
-        // curr_l_col(0..31)이 Depth, row(0..63)가 Width
-        l_weights[curr_l_col + 0][row] = val.x;
-        l_weights[curr_l_col + 1][row] = val.y;
-        l_weights[curr_l_col + 2][row] = val.z;
-        l_weights[curr_l_col + 3][row] = val.w;
+        l_weights[col + 0][row] = val.x;
+        l_weights[col + 1][row] = val.y;
+        l_weights[col + 2][row] = val.z;
+        l_weights[col + 3][row] = val.w;
     }
 }
 
@@ -54,13 +48,12 @@ inline void load_inputs (
 
     l_col <<= 2; // 0, 4, 8, 12
 
-    // [수정] LI_TILE(32)을 채우기 위해 16씩 건너뛰며 2번 반복
-    #pragma unroll
-    for (int k_off = 0; k_off < 32; k_off += 16) {
-        int curr_l_col = l_col + k_off; // 0..15, 16..31
-        int g_col = g_col_base + curr_l_col;
+#pragma unroll
+    for (int loop = 0; loop < 2; loop ++) {
+        int col = l_col + (loop << 4);
+        int g_col = g_col_base + col;
 
-        #pragma unroll
+#pragma unroll
         for (int t = 0; t < LI_TPT; ++t) {
             int row = l_row * LI_TPT + t;
             int g_row = g_row_base + t;
@@ -70,10 +63,10 @@ inline void load_inputs (
                 val = vload4(0, &input[g_row * K + g_col]);
             }
 
-            l_input[curr_l_col + 0][row] = val.x;
-            l_input[curr_l_col + 1][row] = val.y;
-            l_input[curr_l_col + 2][row] = val.z;
-            l_input[curr_l_col + 3][row] = val.w;
+            l_input[col + 0][row] = val.x;
+            l_input[col + 1][row] = val.y;
+            l_input[col + 2][row] = val.z;
+            l_input[col + 3][row] = val.w;
         }
     }
 }
@@ -140,7 +133,7 @@ inline void store_linear (
     float4 b2 = vload4(0, &bias[g_col_base + 8]);
     float4 b3 = vload4(0, &bias[g_col_base + 12]);
 
-    #pragma unroll
+#pragma unroll
     for (int t = 0; t < LI_TPT; ++t) {
         int g_row = g_row_base + t;
         if (g_row < M) {
@@ -188,9 +181,9 @@ __kernel void linear_layer (
 
     float acc[LI_TPT][LI_OPT];
 
-    #pragma unroll
+#pragma unroll
     for (int t = 0; t < LI_TPT; ++t)
-        #pragma unroll
+#pragma unroll
         for (int c = 0; c < LI_OPT; ++c) 
             acc[t][c] = 0.0f;
 
@@ -219,13 +212,12 @@ inline void load_conv2d (
 
     l_col <<= 2;
 
-    // [수정] LI_TILE(32) 커버를 위해 반복 추가
-    #pragma unroll
-    for (int k_off = 0; k_off < 32; k_off += 16) {
-        int curr_l_col = l_col + k_off;
-        int g_col = g_col_base + curr_l_col;
+#pragma unroll
+    for (int loop = 0; loop < 2; loop ++) {
+        int col = l_col + (loop << 4);
+        int g_col = g_col_base + col;
 
-        #pragma unroll
+#pragma unroll
         for (int t = 0; t < LI_TPT; ++t) {
             int row = l_row * LI_TPT + t;
             int g_row = g_row_base + t;
@@ -241,10 +233,10 @@ inline void load_conv2d (
                 val = vload4(0, &img[addr]);
             }
 
-            l_input[curr_l_col + 0][row] = val.x;
-            l_input[curr_l_col + 1][row] = val.y;
-            l_input[curr_l_col + 2][row] = val.z;
-            l_input[curr_l_col + 3][row] = val.w;
+            l_input[col + 0][row] = val.x;
+            l_input[col + 1][row] = val.y;
+            l_input[col + 2][row] = val.z;
+            l_input[col + 3][row] = val.w;
         }
     }
 }
@@ -319,27 +311,26 @@ inline void load_Q(
 
     l_col <<= 2;
 
-    // [수정] LI_TILE(32) 커버를 위해 반복 추가
-    #pragma unroll
-    for (int k_off = 0; k_off < 32; k_off += 16) {
-        int curr_l_col = l_col + k_off;
-        int col = g_col_base + curr_l_col; // 주의: g_col_base + offset
+#pragma unroll
+    for (int loop = 0; loop < 2; loop++) {
+        int col = l_col + (loop << 4);
+        int g_col = g_col_base + col; // 주의: g_col_base + offset
 
-        #pragma unroll
+#pragma unroll
         for (int t = 0; t < LI_TPT; ++t) {
             int row = l_row * LI_TPT + t;
             int g_row = g_row_base + t;
 
-            int addr = bh_offset + g_row * QKV_DIM + col;
+            int addr = bh_offset + g_row * QKV_DIM + g_col;
             float4 val = (float4)0.0f;
             if (g_row < TOKENS) {
                 val = vload4(0, &QKV[addr]);
             }
 
-            l_input[curr_l_col + 0][row] = val.x;
-            l_input[curr_l_col + 1][row] = val.y;
-            l_input[curr_l_col + 2][row] = val.z;
-            l_input[curr_l_col + 3][row] = val.w;
+            l_input[col + 0][row] = val.x;
+            l_input[col + 1][row] = val.y;
+            l_input[col + 2][row] = val.z;
+            l_input[col + 3][row] = val.w;
         }
     }
 }
@@ -350,34 +341,28 @@ inline void load_K (
     int bh_offset,
     int token_base,
     int dim_base,
-    int l_token, // l_row (0~63): 토큰 인덱스로 사용
-    int l_dim    // l_col (0~3): 헤드 차원(Depth) 인덱스로 사용
-) {
-    int qkv_base = bh_offset + EMBED_DIM; // Key의 시작 위치
-    int token = token_base + l_token;     // 현재 스레드가 담당하는 토큰 번호
+    int l_token,
+    int l_dim ) {
+    int qkv_base = bh_offset + EMBED_DIM;
+    int token = token_base + l_token;
 
-    // l_dim(0~3)은 vload4로 4개씩 처리 -> 한 번에 16개 차원 커버
-    // 전체 32개 차원(LI_TILE)을 커버해야 하므로 2번 반복 (0, 16)
     #pragma unroll
     for (int loop = 0; loop < 2; ++loop) {
-        int dim_offset = loop * 16;
-        int current_dim = (l_dim << 2) + dim_offset; // 0, 4, 8... 28 까지 커버
+        int dim = (l_dim << 2) + (loop << 4);
 
-        int head_dim = dim_base + current_dim;
+        int head_dim = dim_base + dim;
         int addr = qkv_base + token * QKV_DIM + head_dim;
 
         float4 val = (float4)0.0f;
-        // 범위 체크
+        
         if (token < TOKENS && head_dim < HEAD_DIM) {
             val = vload4(0, &QKV[addr]);
         }
 
-        // 로컬 메모리 저장: l_weights[Depth][Token]
-        // 즉, [HeadDim][Token] 형태로 Transpose 저장
-        l_weights[current_dim + 0][l_token] = val.x;
-        l_weights[current_dim + 1][l_token] = val.y;
-        l_weights[current_dim + 2][l_token] = val.z;
-        l_weights[current_dim + 3][l_token] = val.w;
+        l_weights[dim + 0][l_token] = val.x;
+        l_weights[dim + 1][l_token] = val.y;
+        l_weights[dim + 2][l_token] = val.z;
+        l_weights[dim + 3][l_token] = val.w;
     }
 }
 
