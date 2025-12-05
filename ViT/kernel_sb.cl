@@ -1,4 +1,4 @@
-#define LI_INPUT_ROWS (LI_LWS_TOKEN * LI_TPT + 4)
+#define LI_INPUT_STRIDE (LI_LWS_TOKEN * LI_TPT + 4)
 
 inline float4 gelu4(float4 x) {
     return 0.5f * x * (1.0f + erf(x / sqrt(2.0f)));
@@ -32,7 +32,7 @@ inline void load_weights (
 
 inline void load_inputs (
     __global const float* input,
-    __local float l_input[LI_STRIDE_IN][LI_INPUT_ROWS],
+    __local float l_input[LI_STRIDE_IN][LI_INPUT_STRIDE],
     int K,
     int M,
     int g_row_base,
@@ -61,7 +61,7 @@ inline void load_inputs (
 }
 
 inline void gemm (
-    __local float l_input[LI_STRIDE_IN][LI_INPUT_ROWS],
+    __local float l_input[LI_STRIDE_IN][LI_INPUT_STRIDE],
     __local float l_weights[LI_TILE][LI_STRIDE_WEIGHT],
     float acc[LI_TPT][LI_OPT],
     int l_row, 
@@ -157,7 +157,7 @@ __kernel void linear_layer (
     const int N,
     const int gelu ) {
 
-    __local float l_input[LI_STRIDE_IN][LI_INPUT_ROWS];
+    __local float l_input[LI_STRIDE_IN][LI_INPUT_STRIDE];
     __local float l_weights[LI_TILE][LI_STRIDE_WEIGHT];
 
     int g_col = get_global_id(0) * LI_OPT;
@@ -190,7 +190,7 @@ __kernel void linear_layer (
 
 inline void load_conv2d (
     __global const float* img,
-    __local float l_input[LI_STRIDE_IN][LI_INPUT_ROWS],
+    __local float l_input[LI_STRIDE_IN][LI_INPUT_STRIDE],
     int* p_patch,
     int K, 
     int M,
@@ -235,7 +235,7 @@ __kernel void linear_conv2d(
     const int K, 
     const int N ) {
 
-    __local float l_input[LI_STRIDE_IN][LI_INPUT_ROWS];
+    __local float l_input[LI_STRIDE_IN][LI_INPUT_STRIDE];
     __local float l_weights[LI_TILE][LI_STRIDE_WEIGHT];
 
     int g_col = get_global_id(0) * LI_OPT;
@@ -287,7 +287,7 @@ __kernel void linear_conv2d(
 
 inline void load_Q(
     __global const float* QKV,
-    __local float l_input[LI_STRIDE_IN][LI_INPUT_ROWS],
+    __local float l_input[LI_STRIDE_IN][LI_INPUT_STRIDE],
     int bh_offset, 
     int g_row_base, 
     int g_col_base,
@@ -339,7 +339,7 @@ inline void load_K (
         int head_dim = dim_base + dim;
         int addr = qkv_base + token * QKV_DIM + head_dim;
 
-        l_weights[dim][token_offset] = (token < TOKENS && head_dim < HEAD_DIM) ? QKV[addr] : 0.0f;
+        l_weights[dim][token_offset] = QKV[addr] * (token < TOKENS && head_dim < HEAD_DIM);
     }
 }
 
@@ -365,13 +365,13 @@ inline void store_score (
                 vals[i] = acc[t][i] * scale;
             }
 
-            int row_base = offset + token * TOKENS;
+            int base = offset + token * TOKENS;
             int col = g_col;
 
 #pragma unroll
             for (int i = 0; i < LI_OPT; ++i) {
                 if (col + i < TOKENS) {
-                    scores[row_base + col + i] = vals[i];
+                    scores[base + col + i] = vals[i];
                 }
             }
         }
@@ -381,12 +381,12 @@ inline void store_score (
 __kernel void attn_score(
     __global const float* QKV,
     __global float* scores ) {
-    __local float l_input[LI_STRIDE_IN][LI_INPUT_ROWS];
+    __local float l_input[LI_STRIDE_IN][LI_INPUT_STRIDE];
     __local float l_weights[LI_TILE][LI_STRIDE_WEIGHT];
 
     int g_col = get_global_id(0) * LI_OPT;
     int g_row = get_global_id(1) * LI_TPT;
-    
+
     int l_row = get_local_id(1);
     int l_col = get_local_id(0);
 
@@ -424,14 +424,15 @@ __kernel void softmax(
     __global float* scores,
     const int size) {
 
-    int row_idx = get_group_id(0);
+    int row = get_group_id(0);
     int l_idx = get_local_id(0);
-    int row_offset = row_idx * size;
+    int row_offset = row * size;
 
     __local float l_cache[256];
 
     float thread_max = -INFINITY;
-    int i = l_idx * 4;
+    int i = l_idx << 2;
+    
     while (i < size) {
         if (i + 3 < size) {
             float4 val = vload4(0, &scores[row_offset + i]);
@@ -463,7 +464,8 @@ __kernel void softmax(
     barrier(CLK_LOCAL_MEM_FENCE);
 
     float thread_sum = 0.0f;
-    i = l_idx * 4;
+    i = l_idx << 2;
+
     while (i < size) {
         if (i + 3 < size) {
             float4 val = vload4(0, &scores[row_offset + i]);
@@ -474,7 +476,6 @@ __kernel void softmax(
             val.w = exp(val.w - g_max);
 
             vstore4(val, 0, &scores[row_offset + i]);
-
             thread_sum += (val.x + val.y + val.z + val.w);
         }
         else {
@@ -485,6 +486,7 @@ __kernel void softmax(
                 thread_sum += val;
             }
         }
+
         i += 1024;
     }
 
@@ -502,7 +504,8 @@ __kernel void softmax(
     float inv_sum = 1.0f / l_cache[0];
     barrier(CLK_LOCAL_MEM_FENCE);
 
-    i = l_idx * 4;
+    i = l_idx << 2;
+
     while (i < size) {
         if (i + 3 < size) {
             float4 val = vload4(0, &scores[row_offset + i]);
@@ -521,72 +524,68 @@ __kernel void softmax(
 __kernel void attn_context(
     __global const float* scores,
     __global const float* QKV,
-    __global float* attn_out
-) {
-    const int g_row_block = get_global_id(0);
-    const int g_dim_idx = get_global_id(1);
-    const int g_batch_head_idx = get_global_id(2);
+    __global float* attn_out ) {
+    const int g_row = get_global_id(0) << 2;
+    const int g_dim = get_global_id(1) << 2;
+    const int bh_idx = get_global_id(2);
 
-    const int row_base = g_row_block << 2;
+    if (g_row >= TOKENS) return;
 
-    if (row_base >= TOKENS) return;
+    const int batch = bh_idx / NUM_HEADS;
+    const int head = bh_idx % NUM_HEADS;
 
-    const int batch_idx = g_batch_head_idx / NUM_HEADS;
-    const int head_idx = g_batch_head_idx % NUM_HEADS;
+    const int head_dim_offset = head * HEAD_DIM;
+    const int batch_offset = batch * TOKENS;
 
-    const int d_offset = g_dim_idx << 2;
-    const int head_dim_offset = head_idx * HEAD_DIM;
-    const int batch_offset = batch_idx * TOKENS;
+    const int score_bh_offset = bh_idx * TOKENS * TOKENS;
+    const __global float* score_ptr_base = scores + score_bh_offset + g_row * TOKENS;
 
-    const int score_head_offset = g_batch_head_idx * TOKENS * TOKENS;
-    const __global float* s_ptr_base = scores + score_head_offset + row_base * TOKENS;
-
-    const int qkv_base = batch_offset * QKV_DIM;
-    const int v_offset = (EMBED_DIM << 1) + head_dim_offset + d_offset;
-    const __global float* v_ptr = QKV + qkv_base + v_offset;
+    const int qkv_bh_offset = batch_offset * QKV_DIM;
+    const int v_offset = (EMBED_DIM << 1) + head_dim_offset + g_dim;
+    const __global float* v_ptr = QKV + qkv_bh_offset + v_offset;
 
     float4 acc0 = (float4)(0.0f);
     float4 acc1 = (float4)(0.0f);
     float4 acc2 = (float4)(0.0f);
     float4 acc3 = (float4)(0.0f);
 
-    const __global float* s_ptr0 = s_ptr_base;
-    const __global float* s_ptr1 = s_ptr_base + TOKENS;
-    const __global float* s_ptr2 = s_ptr_base + (TOKENS << 1);
-    const __global float* s_ptr3 = s_ptr_base + (TOKENS * 3);
+    const __global float* score_ptr0 = score_ptr_base;
+    const __global float* score_ptr1 = score_ptr_base + TOKENS;
+    const __global float* score_ptr2 = score_ptr_base + (TOKENS << 1);
+    const __global float* score_ptr3 = score_ptr_base + (TOKENS * 3);
 
-    const bool r1_valid = (row_base + 1 < TOKENS);
-    const bool r2_valid = (row_base + 2 < TOKENS);
-    const bool r3_valid = (row_base + 3 < TOKENS);
+    const bool row1_valid = (g_row + 1 < TOKENS);
+    const bool row2_valid = (g_row + 2 < TOKENS);
+    const bool row3_valid = (g_row + 3 < TOKENS);
 
-    for (int j = 0; j < TOKENS; ++j) {
+    for (int token = 0; token < TOKENS; ++token) {
         float4 v_val = vload4(0, v_ptr);
         v_ptr += QKV_DIM;
 
-        float s0 = *s_ptr0++;
-        acc0 = fma(v_val, (float4)(s0), acc0);
+        float score0 = *score_ptr0++;
+        acc0 = fma(v_val, (float4)(score0), acc0);
 
-        if (r1_valid) {
-            float s1 = *s_ptr1++;
-            acc1 = fma(v_val, (float4)(s1), acc1);
+        if (row1_valid) {
+            float score1 = *score_ptr1++;
+            acc1 = fma(v_val, (float4)(score1), acc1);
         }
-        if (r2_valid) {
-            float s2 = *s_ptr2++;
-            acc2 = fma(v_val, (float4)(s2), acc2);
+        if (row2_valid) {
+            float score2 = *score_ptr2++;
+            acc2 = fma(v_val, (float4)(score2), acc2);
         }
-        if (r3_valid) {
-            float s3 = *s_ptr3++;
-            acc3 = fma(v_val, (float4)(s3), acc3);
+        if (row3_valid) {
+            float score3 = *score_ptr3++;
+            acc3 = fma(v_val, (float4)(score3), acc3);
         }
     }
 
-    const int out_base = (batch_offset + row_base) * EMBED_DIM + head_dim_offset + d_offset;
+    const int out_base = (batch_offset + g_row) * EMBED_DIM + head_dim_offset + g_dim;
     __global float* p_out = attn_out + out_base;
 
     vstore4(acc0, 0, p_out);
-    if (r1_valid) vstore4(acc1, 0, p_out + EMBED_DIM);
-    if (r2_valid) vstore4(acc2, 0, p_out + (EMBED_DIM << 1));
-    if (r3_valid) vstore4(acc3, 0, p_out + (EMBED_DIM * 3));
+    if (row1_valid) vstore4(acc1, 0, p_out + EMBED_DIM);
+    if (row2_valid) vstore4(acc2, 0, p_out + (EMBED_DIM << 1));
+    if (row3_valid) vstore4(acc3, 0, p_out + (EMBED_DIM * 3));
 }
 
 __kernel void layer_norm(
@@ -595,10 +594,10 @@ __kernel void layer_norm(
     __global const float* weight,
     __constant float* bias) {
 
-    int t = get_global_id(0);
-    if (t >= TOTAL_TOKENS) return;
+    int token = get_global_id(0);
+    if (token >= TOTAL_TOKENS) return;
 
-    int offset = t * EMBED_DIM;
+    int offset = token * EMBED_DIM;
 
     float sum = 0.0f;
     float sum_sq = 0.0f;
@@ -609,8 +608,10 @@ __kernel void layer_norm(
         sum_sq += val * val;
     }
 
-    float mean = sum / EMBED_DIM;
-    float var = sum_sq / EMBED_DIM - mean * mean;
+    const float inv_dim = 1.0f / EMBED_DIM;
+
+    float mean = sum * inv_dim;
+    float var = sum_sq * inv_dim - mean * mean;
 
     float inv_std = rsqrt(var + EPS);
 
@@ -638,16 +639,16 @@ __kernel void pos_embedding(
     __global const float* pos_emb,
     __global float* output) {
 
-    int d = get_global_id(0);
-    int t = get_global_id(1);
-    int b = get_global_id(2);
+    int dim = get_global_id(0);
+    int token = get_global_id(1);
+    int batch = get_global_id(2);
 
-    if (t >= TOKENS) return;
+    if (token >= TOKENS) return;
 
-    int out_idx = b * (TOKENS * EMBED_DIM) + t * EMBED_DIM + d;
+    int out_idx = batch * (TOKENS * EMBED_DIM) + token * EMBED_DIM + dim;
 
-    float pos_val = pos_emb[t * EMBED_DIM + d];
-    float token_val = (t == 0) ? cls_token[d] : patches[b * (NUM_PATCHES * EMBED_DIM) + (t - 1) * EMBED_DIM + d];
+    float pos_val = pos_emb[token * EMBED_DIM + dim];
+    float token_val = (token == 0) ? cls_token[dim] : patches[batch * (NUM_PATCHES * EMBED_DIM) + (token - 1) * EMBED_DIM + dim];
 
     output[out_idx] = token_val + pos_val;
 }
@@ -656,11 +657,11 @@ __kernel void extract_cls(
     __global const float* input,
     __global float* output) {
 
-    int b = get_global_id(0);
-    int d = get_global_id(1);
+    int batch = get_global_id(0);
+    int dim = get_global_id(1);
 
-    int src_idx = b * (TOKENS * EMBED_DIM) + d;
-    int dst_idx = b * EMBED_DIM + d;
+    int src_idx = batch * (TOKENS * EMBED_DIM) + dim;
+    int dst_idx = batch * EMBED_DIM + dim;
 
     output[dst_idx] = input[src_idx];
 }
