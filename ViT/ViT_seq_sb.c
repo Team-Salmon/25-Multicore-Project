@@ -461,7 +461,7 @@ void ViT_seq_sb(ImageData* image, Network* networks, float** probabilities) {
             cl_event* ptr = (j < current_batch_size - 1) ? NULL : &evt_input;
 
             err = clEnqueueWriteBuffer(ctx.q_input, ctx.d_img[steps], CL_FALSE, image_bytes * j,
-                image_bytes, image[i + j].data, num_wait_events, wait_list, ptr);
+                image_bytes, image[i + j].data, num_wait_events, num_wait_events ? wait_list : NULL, ptr);
             CHECK_ERROR(err);
         }
 
