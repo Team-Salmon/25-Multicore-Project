@@ -448,25 +448,26 @@ void ViT_seq_sb(ImageData* image, Network* networks, float** probabilities) {
     float* probs = (float*)clEnqueueMapBuffer(ctx.q_compute, d_results, CL_TRUE, CL_MAP_READ, 0, probs_bytes, 0, NULL, NULL, &err);
     CHECK_ERROR(err);
 
+    cl_event wait_list[1];
+    cl_uint num_wait_events = 0;
+
     for (int i = 0; i < image->n; i += batch_size) {
         steps = (i / batch_size) % 2;
 
-        if (evt_done[steps] != NULL) { // double buffering
-            clWaitForEvents(1, &evt_done[steps]);
-
-            clReleaseEvent(evt_done[steps]);
-            evt_done[steps] = NULL;
-        }
-
-        printf("Processing image %d/%d\n", i + 1, image->n);
+        // printf("Processing image %d/%d\n", i + 1, image->n);
         current_batch_size = (image->n - i) < batch_size ? (image->n - i) : batch_size;
 
         for (int j = 0; j < current_batch_size; j++) {
             cl_event* ptr = (j < current_batch_size - 1) ? NULL : &evt_input;
 
             err = clEnqueueWriteBuffer(ctx.q_input, ctx.d_img[steps], CL_FALSE, image_bytes * j,
-                image_bytes, image[i + j].data, 0, NULL, ptr);
+                image_bytes, image[i + j].data, num_wait_events, wait_list, ptr);
             CHECK_ERROR(err);
+        }
+
+        if (evt_done[steps] != NULL) {
+            clReleaseEvent(evt_done[steps]);
+            evt_done[steps] = NULL;
         }
 
         clEnqueueBarrierWithWaitList(ctx.q_compute, 1, &evt_input, NULL);
