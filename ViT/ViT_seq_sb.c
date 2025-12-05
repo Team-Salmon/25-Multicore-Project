@@ -19,7 +19,7 @@
 #define dropout 0.0
 #define attn_dropout 0.0
 #define drop_path_rate 0.0
-#define eps 1e-6
+#define eps 1e-6f
 
 // custom defines
 #define batch_size 8
@@ -303,6 +303,7 @@ static void init_kernel(Network* networks) {
         "-D TOTAL_TOKENS=%d "
         "-D HEAD_DIM=%d "
         "-D QKV_DIM=%d "
+        "-D EPS=%f "
         "-D LI_LWS_OUT=%d "
         "-D LI_LWS_TOKEN=%d "
         "-D LI_TPT=%d "
@@ -322,6 +323,7 @@ static void init_kernel(Network* networks) {
         total_tokens,
         head_dim,
         qkv_dim,
+        eps,
         li_lws_out,
         li_lws_token,
         li_tpt,
@@ -588,7 +590,7 @@ void ViT_seq_sb(ImageData* image, Network* networks, float** probabilities) {
 #ifdef PROFILE_MODE
         profile_event(evt_done[steps], "Copy Data");
 #endif
-        // break; // for test purpose, process only one batch
+        break; // for test purpose, process only one batch
     }
 
 	for (int s = 0; s < 2; s++) {
