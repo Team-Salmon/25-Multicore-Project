@@ -43,8 +43,6 @@
 
 #define enc_size tokens * embed_dim
 
-// #define PROFILE_MODE
-
 typedef struct __cl_context {
     cl_platform_id platform;
     cl_device_id   device;
@@ -120,10 +118,7 @@ static void layer_norm(cl_mem input, cl_mem ouput, cl_mem weight, cl_mem bias) {
     size_t lws_layernorm = (size_t)2;
     padding_size(&gws_layernorm, &lws_layernorm, 1);
 
-    err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_layernorm, 1, NULL, &gws_layernorm, &lws_layernorm, 0, NULL, ctx.evt_ptr); CHECK_ERROR(err);
-#ifdef PROFILE_MODE
-    profile_event(*ctx.evt_ptr, "LayerNorm");
-#endif
+    err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_layernorm, 1, NULL, &gws_layernorm, &lws_layernorm, 0, NULL, NULL); CHECK_ERROR(err);
 }
 
 static void multihead_attn(cl_mem input, cl_mem output,
@@ -144,10 +139,7 @@ static void multihead_attn(cl_mem input, cl_mem output,
 
     padding_size(gws_attn_score, lws_attn_score, 3);
 
-    err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_attn_score, 3, NULL, gws_attn_score, lws_attn_score, 0, NULL, ctx.evt_ptr); CHECK_ERROR(err);
-#ifdef PROFILE_MODE
-    profile_event(*ctx.evt_ptr, "Attention Score");
-#endif
+    err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_attn_score, 3, NULL, gws_attn_score, lws_attn_score, 0, NULL, NULL); CHECK_ERROR(err);
 
     // Softmax
 
@@ -159,10 +151,7 @@ static void multihead_attn(cl_mem input, cl_mem output,
     size_t total_rows = (size_t)tokens * batch_size * num_heads;
     size_t gws_softmax = total_rows * lws_softmax;
 
-    err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_softmax, 1, NULL, &gws_softmax, &lws_softmax, 0, NULL, ctx.evt_ptr); CHECK_ERROR(err);
-#ifdef PROFILE_MODE
-    profile_event(*ctx.evt_ptr, "Softmax");
-#endif
+    err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_softmax, 1, NULL, &gws_softmax, &lws_softmax, 0, NULL, NULL); CHECK_ERROR(err);
 
     // Context Vector
     err = clSetKernelArg(ctx.k_attn_context, 0, sizeof(cl_mem), &ctx.d_attn_map); CHECK_ERROR(err);
@@ -177,10 +166,7 @@ static void multihead_attn(cl_mem input, cl_mem output,
     };
     padding_size(gws_context, lws_context, 3);
 
-    err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_attn_context, 3, NULL, gws_context, lws_context, 0, NULL, ctx.evt_ptr); CHECK_ERROR(err);
-#ifdef PROFILE_MODE
-    profile_event(*ctx.evt_ptr, "Context Vector");
-#endif
+    err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_attn_context, 3, NULL, gws_context, lws_context, 0, NULL, NULL); CHECK_ERROR(err);
 
     linear_layer(ctx.k_linear, ctx.d_context_vec, output, total_tokens, embed_dim, embed_dim, out_weight, out_bias);
 }
@@ -199,12 +185,7 @@ static void linear_layer(cl_kernel kernel, cl_mem input, cl_mem output, int toke
     size_t gws[2] = { (out_features + li_opt - 1) / li_opt, (token_size + li_tpt - 1) / li_tpt };
     padding_size(gws, ctx.lws_linear, 2);
 
-    err = clEnqueueNDRangeKernel(ctx.q_compute, kernel, 2, NULL, gws, ctx.lws_linear, 0, NULL, ctx.evt_ptr); CHECK_ERROR(err);
-#ifdef PROFILE_MODE
-    if (kernel == ctx.k_linear) profile_event(*ctx.evt_ptr, "Linear Layer");
-	else if (kernel == ctx.k_linear_gelu) profile_event(*ctx.evt_ptr, "Linear Layer + GELU");
-	else if (kernel == ctx.k_patch_embed) profile_event(*ctx.evt_ptr, "Patch Embedding");
-#endif
+    err = clEnqueueNDRangeKernel(ctx.q_compute, kernel, 2, NULL, gws, ctx.lws_linear, 0, NULL, NULL); CHECK_ERROR(err);
 }
 
 static void mlp_block(cl_mem input, cl_mem output, cl_mem fc1_weight, cl_mem fc1_bias, cl_mem fc2_weight, cl_mem fc2_bias) {
@@ -235,10 +216,7 @@ static void add(cl_mem a, cl_mem b, cl_mem output, int size) {
 
     size_t gws = (size_t)size;
 
-    err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_add, 1, NULL, &gws, NULL, 0, NULL, ctx.evt_ptr); CHECK_ERROR(err);
-#ifdef PROFILE_MODE
-    profile_event(*ctx.evt_ptr, "Add");
-#endif
+    err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_add, 1, NULL, &gws, NULL, 0, NULL, NULL); CHECK_ERROR(err);
 }
 
 static void pos_embedding(cl_mem input, cl_mem cls, cl_mem pos, cl_mem output) {
@@ -249,18 +227,10 @@ static void pos_embedding(cl_mem input, cl_mem cls, cl_mem pos, cl_mem output) {
     err = clSetKernelArg(ctx.k_pos_emb, 2, sizeof(cl_mem), &pos); CHECK_ERROR(err);
     err = clSetKernelArg(ctx.k_pos_emb, 3, sizeof(cl_mem), &output); CHECK_ERROR(err);
 
-    size_t gws[3] = {
-        (size_t)embed_dim,
-        (size_t)tokens,
-        (size_t)batch_size
-    };
+    size_t gws[3] = { embed_dim, tokens, batch_size };
 
-    err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_pos_emb, 3, NULL, gws, NULL, 0, NULL, ctx.evt_ptr);
+    err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_pos_emb, 3, NULL, gws, NULL, 0, NULL, NULL);
     CHECK_ERROR(err);
-
-#ifdef PROFILE_MODE
-    profile_event(*ctx.evt_ptr, "Cls + Pos emb Input");
-#endif
 }
 
 static void init_kernel(Network* networks) {
@@ -271,13 +241,7 @@ static void init_kernel(Network* networks) {
 
     ctx.context = clCreateContext(NULL, 1, &ctx.device, NULL, NULL, &err); CHECK_ERROR(err);
 
-    cl_queue_properties props[] = {
-#ifdef PROFILE_MODE
-        CL_QUEUE_PROPERTIES,
-        CL_QUEUE_PROFILING_ENABLE,
-#endif
-        0
-    };
+    cl_queue_properties props[] = { 0 };
 
     ctx.q_input = clCreateCommandQueueWithProperties(ctx.context, ctx.device, props, &err); CHECK_ERROR(err);
 	ctx.q_transfer = clCreateCommandQueueWithProperties(ctx.context, ctx.device, props, &err); CHECK_ERROR(err);
@@ -407,11 +371,7 @@ static void init_kernel(Network* networks) {
 
     ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-#ifdef PROFILE_MODE
-    ctx.evt_ptr = &ctx.evt_profile;
-#else
     ctx.evt_ptr = NULL;
-#endif
 
     free(kernel_source);
 }
@@ -438,15 +398,11 @@ void ViT_seq_sb(ImageData* image, Network* networks, float** probabilities) {
     cl_event evt_input = NULL;
     cl_event evt_done[2] = { NULL, NULL };
 
-    init_profiler();
-
     size_t probs_bytes = sizeof(float) * num_classes * image->n;
 
-    cl_mem d_results = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE | CL_MEM_ALLOC_HOST_PTR, probs_bytes, NULL, &err);
-    CHECK_ERROR(err);
+    cl_mem d_results = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE | CL_MEM_ALLOC_HOST_PTR, probs_bytes, NULL, &err); CHECK_ERROR(err);
 
-    float* probs = (float*)clEnqueueMapBuffer(ctx.q_compute, d_results, CL_TRUE, CL_MAP_READ, 0, probs_bytes, 0, NULL, NULL, &err);
-    CHECK_ERROR(err);
+    float* probs = (float*)clEnqueueMapBuffer(ctx.q_compute, d_results, CL_TRUE, CL_MAP_READ, 0, probs_bytes, 0, NULL, NULL, &err); CHECK_ERROR(err);
 
     for (int i = 0; i < image->n; i += batch_size) {
         steps = (i / batch_size) % 2;
@@ -458,7 +414,6 @@ void ViT_seq_sb(ImageData* image, Network* networks, float** probabilities) {
             evt_done[steps] = NULL;
         }
 
-        printf("Processing image %d/%d\n", i + 1, image->n);
         current_batch_size = (image->n - i) < batch_size ? (image->n - i) : batch_size;
 
         for (int j = 0; j < current_batch_size; j++) {
@@ -564,10 +519,7 @@ void ViT_seq_sb(ImageData* image, Network* networks, float** probabilities) {
             (size_t)embed_dim
         };
 
-        err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_extract_cls, 2, NULL, gws_extract_cls, NULL, 0, NULL, ctx.evt_ptr); CHECK_ERROR(err);
-#ifdef PROFILE_MODE
-        profile_event(*ctx.evt_ptr, "Extract CLS Token");
-#endif
+        err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_extract_cls, 2, NULL, gws_extract_cls, NULL, 0, NULL, NULL); CHECK_ERROR(err);
 
 		wait_transfer(151);
         linear_layer(ctx.k_linear, ctx.d_cls_tokens, ctx.d_logits[steps], batch_size, embed_dim, num_classes, ctx.d_networks[150], ctx.d_networks[151]);
@@ -582,19 +534,12 @@ void ViT_seq_sb(ImageData* image, Network* networks, float** probabilities) {
         size_t gws_softmax = (size_t)current_batch_size * lws_softmax;
 
         err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_softmax, 1, NULL, &gws_softmax, &lws_softmax, 0, NULL, &evt_done[steps]); CHECK_ERROR(err);
-#ifdef PROFILE_MODE
-        profile_event(evt_done[steps], "Output Softmax");
-#endif
-
 		float* probs_ptr = &probs[i * num_classes];
         size_t output_bytes = sizeof(float) * num_classes * current_batch_size;
 
 		clEnqueueBarrierWithWaitList(ctx.q_output, 1, &evt_done[steps], NULL);
 		err = clEnqueueReadBuffer(ctx.q_output, ctx.d_logits[steps], CL_FALSE, 0, output_bytes, probs_ptr, 0, NULL, NULL); CHECK_ERROR(err);
 
-#ifdef PROFILE_MODE
-        profile_event(evt_done[steps], "Copy Data");
-#endif
         // break; // for test purpose, process only one batch
     }
 
@@ -606,21 +551,10 @@ void ViT_seq_sb(ImageData* image, Network* networks, float** probabilities) {
             evt_done[s] = NULL;
         }
     }
-
-#ifdef PROFILE_MODE
-    profile_event(*ctx.evt_ptr, "Copy Data");
-#endif
-
     clFinish(ctx.q_output);
     for (int k = 0; k < image->n; k++) {
         memcpy(probabilities[k], &probs[k * num_classes], sizeof(float) * num_classes);
     }
-
-#ifdef PROFILE_MODE
-    clFinish(ctx.q_compute);
-    print_profiler_stats();
-#endif
-
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
     clReleaseMemObject(d_results);
