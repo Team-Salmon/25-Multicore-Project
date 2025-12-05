@@ -360,17 +360,22 @@ static void init_kernel(Network* networks) {
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
     // Create Kernels
 
-    ctx.k_patch_embed = clCreateKernel(ctx.program, "linear_conv2d", &err); CHECK_ERROR(err);
-    ctx.k_linear = clCreateKernel(ctx.program, "linear_default", &err); CHECK_ERROR(err);
-    ctx.k_linear_gelu = clCreateKernel(ctx.program, "linear_gelu", &err); CHECK_ERROR(err);
-
-    ctx.k_attn_score = clCreateKernel(ctx.program, "attn_score", &err); CHECK_ERROR(err);
-    ctx.k_softmax = clCreateKernel(ctx.program, "softmax", &err); CHECK_ERROR(err);
+    ctx.k_patch_embed  = clCreateKernel(ctx.program, "linear_conv2d", &err); CHECK_ERROR(err);
+    ctx.k_linear       = clCreateKernel(ctx.program, "linear_layer", &err); CHECK_ERROR(err);
+    ctx.k_linear_gelu  = clCreateKernel(ctx.program, "linear_layer", &err); CHECK_ERROR(err);
+    ctx.k_attn_score   = clCreateKernel(ctx.program, "attn_score", &err); CHECK_ERROR(err);
+    ctx.k_softmax      = clCreateKernel(ctx.program, "softmax", &err); CHECK_ERROR(err);
     ctx.k_attn_context = clCreateKernel(ctx.program, "attn_context", &err); CHECK_ERROR(err);
-    ctx.k_layernorm = clCreateKernel(ctx.program, "layer_norm", &err); CHECK_ERROR(err);
-    ctx.k_add = clCreateKernel(ctx.program, "add", &err); CHECK_ERROR(err);
-    ctx.k_pos_emb = clCreateKernel(ctx.program, "pos_embedding", &err); CHECK_ERROR(err);
-    ctx.k_extract_cls = clCreateKernel(ctx.program, "extract_cls", &err); CHECK_ERROR(err);
+    ctx.k_layernorm    = clCreateKernel(ctx.program, "layer_norm", &err); CHECK_ERROR(err);
+    ctx.k_add          = clCreateKernel(ctx.program, "add", &err); CHECK_ERROR(err);
+    ctx.k_pos_emb      = clCreateKernel(ctx.program, "pos_embedding", &err); CHECK_ERROR(err);
+    ctx.k_extract_cls  = clCreateKernel(ctx.program, "extract_cls", &err); CHECK_ERROR(err);
+
+    ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    // Set Initial Args
+
+    err = clSetKernelArg(ctx.k_linear, 7, sizeof(cl_mem), &(int){0}); CHECK_ERROR(err);
+    err = clSetKernelArg(ctx.k_linear_gelu, 7, sizeof(int), &(int){1}); CHECK_ERROR(err);
 
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
     // Create Buffers
@@ -590,12 +595,13 @@ void ViT_seq_sb(ImageData* image, Network* networks, float** probabilities) {
 #ifdef PROFILE_MODE
         profile_event(evt_done[steps], "Copy Data");
 #endif
-        break; // for test purpose, process only one batch
+        // break; // for test purpose, process only one batch
     }
 
 	for (int s = 0; s < 2; s++) {
         if (evt_done[s]) {
             clWaitForEvents(1, &evt_done[s]);
+
             clReleaseEvent(evt_done[s]);
             evt_done[s] = NULL;
         }
