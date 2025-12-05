@@ -319,29 +319,27 @@ inline void load_K (
     __global const float* QKV,
     __local float l_weights[LI_TILE][LI_STRIDE_WEIGHT],
     int bh_offset,
-    int col_base,
-    int g_col_base,
-    int l_row,
-    int l_col ) {
+    int token_base,
+    int dim_base,
+    int l_token,
+    int l_dim ) {
 
-    int k_offset = bh_offset + EMBED_DIM;
-    int flat = l_row * LI_LWS_OUT + l_col;
+    int qkv_base = bh_offset + EMBED_DIM;
+    int idx_base = (l_token * LI_LWS_OUT + l_dim) << 2;
+    
+    int base_dim = idx_base & 12;
+    int token_offset = idx_base >> 4;
+
+    int token = token_base + token_offset;
 
 #pragma unroll
     for (int i = 0; i < 4; ++i) {
-        int idx = (flat << 2) + i;
-        int row = idx & 15;
-        int col = idx >> 4;
+        int dim = base_dim + i;
+        
+        int head_dim = dim_base + dim;
+        int addr = qkv_base + token * QKV_DIM + head_dim;
 
-        int token = col_base + col;
-        int dim = g_col_base + row;
-
-        int addr = k_offset + token * QKV_DIM + dim;
-        if (token < TOKENS && dim < HEAD_DIM) {
-            l_weights[row][col] = QKV[addr];
-        } else {
-            l_weights[row][col] = 0.0f;
-        }
+        l_weights[dim][token_offset] = (token < TOKENS && head_dim < HEAD_DIM) ? QKV[addr] : 0.0f;
     }
 }
 
@@ -388,9 +386,11 @@ __kernel void attn_score(
 
     int g_col = get_global_id(0) * LI_OPT;
     int g_row = get_global_id(1) * LI_TPT;
-    int col_base = get_group_id(0) * LI_LWS_OUT * LI_OPT;
+    
     int l_row = get_local_id(1);
     int l_col = get_local_id(0);
+
+    int col_base = get_group_id(0) * LI_LWS_OUT * LI_OPT;
     
     int bh_idx = get_global_id(2); 
     int batch = bh_idx / NUM_HEADS;
