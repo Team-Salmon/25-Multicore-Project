@@ -210,6 +210,41 @@ __kernel void linear_gelu (
     store_linear(output, bias, acc, g_token_base, g_out_base, M, N, 1);
 }
 
+inline void load_conv2d (
+    __global const float* input_img,
+    __local float local_input[LI_STRIDE_IN][LI_LWS_TOKEN * LI_TPT + 4],
+    int* patch_base_addr,
+    int k_curr,
+    int K, int M,
+    int g_token_base, 
+    int l_token_idx, 
+    int l_out_idx  ) {
+
+    #pragma unroll
+    for (int t = 0; t < LI_TPT; ++t) {
+        int l_row = l_token_idx * LI_TPT + t;
+        int g_row = g_token_base + t;
+        int k_offset = l_out_idx * 4;
+        int current_k = k_curr + k_offset;
+        float4 val = (float4)(0.0f);
+
+        if (g_row < M && current_k < K) {
+            int ch = current_k / (PATCH_SIZE * PATCH_SIZE);
+            int rem_k = current_k & ((PATCH_SIZE * PATCH_SIZE) - 1);
+            int py = rem_k >> 4; // / 16
+            int px = rem_k & (PATCH_SIZE - 1); // % 16
+            
+            int addr = patch_base_addr[t] + ch * (IMG_SIZE * IMG_SIZE) + py * IMG_SIZE + px;
+            val = vload4(0, &input_img[addr]);
+        }
+
+        local_input[k_offset + 0][l_row] = val.x;
+        local_input[k_offset + 1][l_row] = val.y;
+        local_input[k_offset + 2][l_row] = val.z;
+        local_input[k_offset + 3][l_row] = val.w;
+    }
+}
+
 __kernel void linear_conv2d(
     __global const float* input_img,
     __global float* output,
@@ -255,31 +290,7 @@ __kernel void linear_conv2d(
         for (int c = 0; c < LI_OPT; ++c) acc[t][c] = 0.0f;
 
     for (int k_curr = 0; k_curr < K; k_curr += LI_TILE) {
-        #pragma unroll
-        for (int t = 0; t < LI_TPT; ++t) {
-            int l_row = l_token_idx * LI_TPT + t;
-            int g_row = g_token_base + t;
-            int k_offset = l_out_idx * 4;
-            int current_k = k_curr + k_offset;
-
-            float4 val = (float4)(0.0f);
-
-            if (g_row < M && current_k < K) {
-                int ch = current_k / (PATCH_SIZE * PATCH_SIZE);
-                int rem_k = current_k & ((PATCH_SIZE * PATCH_SIZE) - 1);
-                int py = rem_k >> 4;
-                int px = rem_k & (PATCH_SIZE - 1);
-                int addr = patch_base_addr[t] + ch * (IMG_SIZE * IMG_SIZE) + py * IMG_SIZE + px;
-                
-                val = vload4(0, &input_img[addr]);
-            }
-
-            local_input[k_offset + 0][l_row] = val.x;
-            local_input[k_offset + 1][l_row] = val.y;
-            local_input[k_offset + 2][l_row] = val.z;
-            local_input[k_offset + 3][l_row] = val.w;
-        }
-
+        load_conv2d(input_img, local_input, patch_base_addr, k_curr, K, M, g_token_base, l_token_idx, l_out_idx);
         load_weights(weights, local_weights, k_curr, K, N, g_out_group_start, l_flat, l_token_idx, l_out_idx);
         
         barrier(CLK_LOCAL_MEM_FENCE);
