@@ -130,10 +130,10 @@ inline void store_linear (
             }
 
             __global float* out_ptr = &output[curr_g_token * N + g_out_base];
-            vstore4(res0, 0, out_ptr + 0);
-            vstore4(res1, 0, out_ptr + 4);
-            vstore4(res2, 0, out_ptr + 8);
-            vstore4(res3, 0, out_ptr + 12);
+            if (g_out_base + 4 <= N) vstore4(res0, 0, out_ptr + 0);
+            if (g_out_base + 8 <= N) vstore4(res1, 0, out_ptr + 4);
+            if (g_out_base + 12 <= N) vstore4(res2, 0, out_ptr + 8);
+            if (g_out_base + 16 <= N) vstore4(res3, 0, out_ptr + 12);
         }
     }
 }
