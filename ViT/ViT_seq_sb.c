@@ -149,15 +149,17 @@ static void multihead_attn(cl_mem input, cl_mem output,
     profile_event(*ctx.evt_ptr, "Attention Score");
 #endif
 
-    // Softmax ���
+    // Softmax
 
     int token_size = tokens;
     err = clSetKernelArg(ctx.k_softmax, 0, sizeof(cl_mem), &ctx.d_attn_map); CHECK_ERROR(err);
     err = clSetKernelArg(ctx.k_softmax, 1, sizeof(int), &token_size); CHECK_ERROR(err);
 
-    size_t gws_softmax = (size_t)tokens * batch_size * num_heads;
+    size_t lws_softmax = 256;
+    size_t total_rows = (size_t)tokens * batch_size * num_heads;
+    size_t gws_softmax = total_rows * lws_softmax;
 
-    err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_softmax, 1, NULL, &gws_softmax, NULL, 0, NULL, ctx.evt_ptr); CHECK_ERROR(err);
+    err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_softmax, 1, NULL, &gws_softmax, &lws_softmax, 0, NULL, ctx.evt_ptr); CHECK_ERROR(err);
 #ifdef PROFILE_MODE
     profile_event(*ctx.evt_ptr, "Softmax");
 #endif
@@ -563,13 +565,16 @@ void ViT_seq_sb(ImageData* image, Network* networks, float** probabilities) {
 		wait_transfer(151);
         linear_layer(ctx.k_linear, ctx.d_cls_tokens, ctx.d_logits[steps], batch_size, embed_dim, num_classes, ctx.d_networks[150], ctx.d_networks[151]);
 
+        // Softmax
+
         int classes = num_classes;
         err = clSetKernelArg(ctx.k_softmax, 0, sizeof(cl_mem), &ctx.d_logits[steps]); CHECK_ERROR(err);
         err = clSetKernelArg(ctx.k_softmax, 1, sizeof(int), &classes); CHECK_ERROR(err);
 
-        size_t gws_softmax = current_batch_size;
+        size_t lws_softmax = 256;
+        size_t gws_softmax = (size_t)current_batch_size * lws_softmax;
 
-        err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_softmax, 1, NULL, &gws_softmax, NULL, 0, NULL, &evt_done[steps]); CHECK_ERROR(err);
+        err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_softmax, 1, NULL, &gws_softmax, &lws_softmax, 0, NULL, &evt_done[steps]); CHECK_ERROR(err);
 #ifdef PROFILE_MODE
         profile_event(evt_done[steps], "Output Softmax");
 #endif

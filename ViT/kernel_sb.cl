@@ -430,24 +430,97 @@ __kernel void softmax(
     __global float* scores,
     const int size) {
 
-    int row = get_global_id(0);
-    int offset = row * size;
+    int row_idx = get_group_id(0);
+    int l_idx = get_local_id(0);
+    int row_offset = row_idx * size;
 
-    float max_val = scores[offset];
-    for (int j = 1; j < size; j++) {
-        float val = scores[offset + j];
-        if (val > max_val) max_val = val;
+    __local float local_cache[256];
+
+    float thread_max = -INFINITY;
+    int i = l_idx * 4;
+    while (i < size) {
+        if (i + 3 < size) {
+            float4 val = vload4(0, &scores[row_offset + i]);
+            thread_max = fmax(thread_max, val.x);
+            thread_max = fmax(thread_max, val.y);
+            thread_max = fmax(thread_max, val.z);
+            thread_max = fmax(thread_max, val.w);
+        }
+        else {
+            for (int k = 0; k < 4 && (i + k) < size; ++k) {
+                float val = scores[row_offset + i + k];
+                if (val > thread_max) thread_max = val;
+            }
+        }
+        i += 1024;
     }
 
-    float sum_exp = 0.0f;
-    for (int j = 0; j < size; j++) {
-        float exp_val = exp(scores[offset + j] - max_val);
-        scores[offset + j] = exp_val;
-        sum_exp += exp_val;
+    local_cache[l_idx] = thread_max;
+    barrier(CLK_LOCAL_MEM_FENCE);
+
+#pragma unroll
+    for (int stride = 128; stride > 0; stride >>= 1) {
+        if (l_idx < stride) {
+            local_cache[l_idx] = fmax(local_cache[l_idx], local_cache[l_idx + stride]);
+        }
+        barrier(CLK_LOCAL_MEM_FENCE);
+    }
+    float global_max = local_cache[0];
+    barrier(CLK_LOCAL_MEM_FENCE);
+
+    float thread_sum = 0.0f;
+    i = l_idx * 4;
+    while (i < size) {
+        if (i + 3 < size) {
+            float4 val = vload4(0, &scores[row_offset + i]);
+
+            val.x = exp(val.x - global_max);
+            val.y = exp(val.y - global_max);
+            val.z = exp(val.z - global_max);
+            val.w = exp(val.w - global_max);
+
+            vstore4(val, 0, &scores[row_offset + i]);
+
+            thread_sum += (val.x + val.y + val.z + val.w);
+        }
+        else {
+            for (int k = 0; k < 4 && (i + k) < size; ++k) {
+                float val = scores[row_offset + i + k];
+                val = exp(val - global_max);
+                scores[row_offset + i + k] = val;
+                thread_sum += val;
+            }
+        }
+        i += 1024;
     }
 
-    for (int j = 0; j < size; j++) {
-        scores[offset + j] /= sum_exp;
+    local_cache[l_idx] = thread_sum;
+    barrier(CLK_LOCAL_MEM_FENCE);
+
+#pragma unroll
+    for (int stride = 128; stride > 0; stride >>= 1) {
+        if (l_idx < stride) {
+            local_cache[l_idx] += local_cache[l_idx + stride];
+        }
+        barrier(CLK_LOCAL_MEM_FENCE);
+    }
+
+    float inv_sum = 1.0f / local_cache[0];
+    barrier(CLK_LOCAL_MEM_FENCE);
+
+    i = l_idx * 4;
+    while (i < size) {
+        if (i + 3 < size) {
+            float4 val = vload4(0, &scores[row_offset + i]);
+            val *= inv_sum;
+            vstore4(val, 0, &scores[row_offset + i]);
+        }
+        else {
+            for (int k = 0; k < 4 && (i + k) < size; ++k) {
+                scores[row_offset + i + k] *= inv_sum;
+            }
+        }
+        i += 1024;
     }
 }
 
