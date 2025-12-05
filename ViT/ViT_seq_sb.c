@@ -24,13 +24,13 @@
 // custom defines
 #define batch_size 8
 
-#define li_lws_out 8
-#define li_lws_token 32
+#define li_lws_out 4
+#define li_lws_token 64
 #define li_tpt 4 // tokens per thread
 #define li_opt 16 // output per thread
 #define li_tile 32
 #define li_stride_in 33
-#define li_stride_weight 129
+#define li_stride_weight 65
 
 #define output_size img_size / patch_size
 #define num_patches output_size * output_size
