@@ -16,18 +16,23 @@ inline void load_weights (
 
     l_col <<= 2; // float4 load
     
-    int g_row = g_row_base + l_row;
     int g_col = g_col_base + l_col;
 
-    float4 val = (float4)0.0f;
-    if (g_row < N && g_col < K) {
-        val = vload4(0, &weights[g_row * K + g_col]);
-    }
+    #pragma unroll
+    for (int i = 0; i < 4; ++i) {
+        int row = l_row + i * LI_LWS_TOKEN;
+        int g_row = g_row_base + row;
 
-    l_weights[l_col + 0][l_row] = val.x;
-    l_weights[l_col + 1][l_row] = val.y;
-    l_weights[l_col + 2][l_row] = val.z;
-    l_weights[l_col + 3][l_row] = val.w;
+        float4 val = (float4)0.0f;
+        if (g_row < N && g_col < K) {
+            val = vload4(0, &weights[g_row * K + g_col]);
+        }
+
+        l_weights[l_col + 0][row] = val.x;
+        l_weights[l_col + 1][row] = val.y;
+        l_weights[l_col + 2][row] = val.z;
+        l_weights[l_col + 3][row] = val.w;
+    }
 }
 
 inline void load_inputs (
@@ -325,21 +330,24 @@ inline void load_K (
     int l_dim ) {
 
     int qkv_base = bh_offset + EMBED_DIM;
-    int idx_base = (l_token * LI_LWS_OUT + l_dim) << 2;
-    
-    int base_dim = idx_base & 12;
-    int token_offset = idx_base >> 4;
 
-    int token = token_base + token_offset;
-
-#pragma unroll
-    for (int i = 0; i < 4; ++i) {
-        int dim = base_dim + i;
+    #pragma unroll
+    for (int loop = 0; loop < 4; ++loop) {
+        int idx_base = ((l_token * LI_LWS_OUT + l_dim) << 2) + ((loop * LI_LWS_TOKEN) << 5);
         
-        int head_dim = dim_base + dim;
-        int addr = qkv_base + token * QKV_DIM + head_dim;
+        int base_dim = idx_base & 28;
+        int token_offset = idx_base >> 5;
 
-        l_weights[dim][token_offset] = QKV[addr] * (token < TOKENS && head_dim < HEAD_DIM);
+        int token = token_base + token_offset;
+        
+        #pragma unroll
+        for (int i = 0; i < 4; ++i) {
+            int dim = base_dim + i;
+            int head_dim = dim_base + dim;
+            int addr = qkv_base + token * QKV_DIM + head_dim;
+            
+            l_weights[dim][token_offset] = QKV[addr] * (token < TOKENS && head_dim < HEAD_DIM);
+        }
     }
 }
 
