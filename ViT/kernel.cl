@@ -6,7 +6,7 @@ inline float4 gelu4(float4 x) {
 
 inline void load_weights (
     __global const float* weights,
-    __local float l_weights[LI_TILE][LI_STRIDE_WEIGHT],
+    __local float l_weights[LI_STRIDE_IN][LI_STRIDE_WEIGHT],
     int K, 
     int N,
     int g_row_base,
@@ -73,7 +73,7 @@ inline void load_inputs (
 
 inline void gemm (
     __local float l_input[LI_STRIDE_IN][LI_INPUT_STRIDE],
-    __local float l_weights[LI_TILE][LI_STRIDE_WEIGHT],
+    __local float l_weights[LI_STRIDE_IN][LI_STRIDE_WEIGHT],
     float acc[LI_TPT][LI_OPT],
     int l_row, 
     int l_col) {
@@ -169,7 +169,7 @@ __kernel void linear_layer (
     const int gelu ) {
 
     __local float l_input[LI_STRIDE_IN][LI_INPUT_STRIDE];
-    __local float l_weights[LI_TILE][LI_STRIDE_WEIGHT];
+    __local float l_weights[LI_STRIDE_IN][LI_STRIDE_WEIGHT];
 
     int g_col = get_global_id(0) * LI_OPT;
     int g_row = get_global_id(1) * LI_TPT;
@@ -251,7 +251,7 @@ __kernel void linear_conv2d(
     const int N ) {
 
     __local float l_input[LI_STRIDE_IN][LI_INPUT_STRIDE];
-    __local float l_weights[LI_TILE][LI_STRIDE_WEIGHT];
+    __local float l_weights[LI_STRIDE_IN][LI_STRIDE_WEIGHT];
 
     int g_col = get_global_id(0) * LI_OPT;
     int g_row = get_global_id(1) * LI_TPT;
@@ -337,7 +337,7 @@ inline void load_q(
 
 inline void load_k (
     __global const float* QKV,
-    __local float l_weights[LI_TILE][LI_STRIDE_WEIGHT],
+    __local float l_weights[LI_STRIDE_IN][LI_STRIDE_WEIGHT],
     int bh_offset,
     int token_base,
     int dim_base,
@@ -405,7 +405,7 @@ __kernel void attn_score(
     __global const float* QKV,
     __global float* scores ) {
     __local float l_input[LI_STRIDE_IN][LI_INPUT_STRIDE];
-    __local float l_weights[LI_TILE][LI_STRIDE_WEIGHT];
+    __local float l_weights[LI_STRIDE_IN][LI_STRIDE_WEIGHT];
 
     int g_col = get_global_id(0) * LI_OPT;
     int g_row = get_global_id(1) * LI_TPT;

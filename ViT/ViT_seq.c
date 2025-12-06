@@ -310,15 +310,12 @@ void init_kernel(Network* networks) {
             NULL,
             &err);
 
-       
-
         err = clEnqueueWriteBuffer(ctx.q_load,
             ctx.d_networks[i],
             CL_FALSE, 0,
             sizeof(float) * networks[i].size,
             networks[i].data,
             0, NULL, &ctx.evt_transfer[i]);
-       
     }
 
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
