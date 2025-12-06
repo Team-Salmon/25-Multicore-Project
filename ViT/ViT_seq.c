@@ -28,8 +28,8 @@
 #define li_tpt 4 // tokens per thread
 #define li_opt 16 // output per thread
 #define li_tile 32
-#define li_stride_in 33
-#define li_stride_weight 65
+#define li_stride_in (li_tile + 1)
+#define li_stride_weight (li_lws_out * li_opt + 1)
 
 #define output_size img_size / patch_size
 #define num_patches output_size * output_size

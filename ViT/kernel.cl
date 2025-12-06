@@ -300,7 +300,7 @@ __kernel void linear_conv2d(
     store_linear(output, bias, acc, M, N, g_row, g_col, 0);
 }
 
-inline void load_Q(
+inline void load_q(
     __global const float* QKV,
     __local float l_input[LI_STRIDE_IN][LI_INPUT_STRIDE],
     int bh_offset, 
@@ -335,7 +335,7 @@ inline void load_Q(
     }
 }
 
-inline void load_K (
+inline void load_k (
     __global const float* QKV,
     __local float l_weights[LI_TILE][LI_STRIDE_WEIGHT],
     int bh_offset,
@@ -432,8 +432,8 @@ __kernel void attn_score(
             acc[t][c] = 0.0f;
 
     for (int k = 0; k < HEAD_DIM; k += LI_TILE) {
-        load_Q(QKV, l_input, bh_offset, g_row, k, l_row, l_col);
-        load_K(QKV, l_weights, bh_offset, col_base, k, l_row, l_col);
+        load_q(QKV, l_input, bh_offset, g_row, k, l_row, l_col);
+        load_k(QKV, l_weights, bh_offset, col_base, k, l_row, l_col);
         
         barrier(CLK_LOCAL_MEM_FENCE);
         gemm(l_input, l_weights, acc, l_row, l_col);
