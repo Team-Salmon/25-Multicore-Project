@@ -24,15 +24,15 @@ inline void load_weights (
         int row = l_row; 
         int g_row = g_row_base + row;
 
-        float4 val = (float4)0.0f;
+        float4 w = (float4)0.0f;
         if (g_row < N && g_col < K) {
-            val = vload4(0, &weights[g_row * K + g_col]);
+            w = vload4(0, &weights[g_row * K + g_col]);
         }
 
-        l_weights[col + 0][row] = val.x;
-        l_weights[col + 1][row] = val.y;
-        l_weights[col + 2][row] = val.z;
-        l_weights[col + 3][row] = val.w;
+        l_weights[col + 0][row] = w.x;
+        l_weights[col + 1][row] = w.y;
+        l_weights[col + 2][row] = w.z;
+        l_weights[col + 3][row] = w.w;
     }
 }
 
@@ -58,15 +58,15 @@ inline void load_inputs (
             int row = l_row * LI_TPT + t;
             int g_row = g_row_base + t;
 
-            float4 val = (float4)0.0f;
+            float4 in = (float4)0.0f;
             if (g_row < M && g_col < K) {
-                val = vload4(0, &input[g_row * K + g_col]);
+                in = vload4(0, &input[g_row * K + g_col]);
             }
 
-            l_input[col + 0][row] = val.x;
-            l_input[col + 1][row] = val.y;
-            l_input[col + 2][row] = val.z;
-            l_input[col + 3][row] = val.w;
+            l_input[col + 0][row] = in.x;
+            l_input[col + 1][row] = in.y;
+            l_input[col + 2][row] = in.z;
+            l_input[col + 3][row] = in.w;
         }
     }
 }
@@ -94,27 +94,27 @@ inline void gemm (
         float4 w2 = vload4(2, w_ptr);
         float4 w3 = vload4(3, w_ptr);
 
-        float4 vec = vload4(0, &l_input[k][in_base]); 
+        float4 in = vload4(0, &l_input[k][in_base]); 
         
-        p_acc0[0] = fma((float4)(vec.x), w0, p_acc0[0]);
-        p_acc0[1] = fma((float4)(vec.x), w1, p_acc0[1]);
-        p_acc0[2] = fma((float4)(vec.x), w2, p_acc0[2]);
-        p_acc0[3] = fma((float4)(vec.x), w3, p_acc0[3]);
+        p_acc0[0] = fma((float4)(in.x), w0, p_acc0[0]);
+        p_acc0[1] = fma((float4)(in.x), w1, p_acc0[1]);
+        p_acc0[2] = fma((float4)(in.x), w2, p_acc0[2]);
+        p_acc0[3] = fma((float4)(in.x), w3, p_acc0[3]);
         
-        p_acc1[0] = fma((float4)(vec.y), w0, p_acc1[0]);
-        p_acc1[1] = fma((float4)(vec.y), w1, p_acc1[1]);
-        p_acc1[2] = fma((float4)(vec.y), w2, p_acc1[2]);
-        p_acc1[3] = fma((float4)(vec.y), w3, p_acc1[3]);
+        p_acc1[0] = fma((float4)(in.y), w0, p_acc1[0]);
+        p_acc1[1] = fma((float4)(in.y), w1, p_acc1[1]);
+        p_acc1[2] = fma((float4)(in.y), w2, p_acc1[2]);
+        p_acc1[3] = fma((float4)(in.y), w3, p_acc1[3]);
 
-        p_acc2[0] = fma((float4)(vec.z), w0, p_acc2[0]);
-        p_acc2[1] = fma((float4)(vec.z), w1, p_acc2[1]);
-        p_acc2[2] = fma((float4)(vec.z), w2, p_acc2[2]);
-        p_acc2[3] = fma((float4)(vec.z), w3, p_acc2[3]);
+        p_acc2[0] = fma((float4)(in.z), w0, p_acc2[0]);
+        p_acc2[1] = fma((float4)(in.z), w1, p_acc2[1]);
+        p_acc2[2] = fma((float4)(in.z), w2, p_acc2[2]);
+        p_acc2[3] = fma((float4)(in.z), w3, p_acc2[3]);
 
-        p_acc3[0] = fma((float4)(vec.w), w0, p_acc3[0]);
-        p_acc3[1] = fma((float4)(vec.w), w1, p_acc3[1]);
-        p_acc3[2] = fma((float4)(vec.w), w2, p_acc3[2]);
-        p_acc3[3] = fma((float4)(vec.w), w3, p_acc3[3]);
+        p_acc3[0] = fma((float4)(in.w), w0, p_acc3[0]);
+        p_acc3[1] = fma((float4)(in.w), w1, p_acc3[1]);
+        p_acc3[2] = fma((float4)(in.w), w2, p_acc3[2]);
+        p_acc3[3] = fma((float4)(in.w), w3, p_acc3[3]);
     }
 }
 
