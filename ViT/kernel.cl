@@ -14,7 +14,7 @@ inline void load_weights (
     int l_row,
     int l_col ) {
 
-    l_col <<= 2;
+    l_col <<= 2; // float4 load
 
     #pragma unroll
     for (int loop = 0; loop < 2; loop ++) {
@@ -46,7 +46,7 @@ inline void load_inputs (
     int l_row,
     int l_col ) {
 
-    l_col <<= 2; // 0, 4, 8, 12
+    l_col <<= 2;
 
 #pragma unroll
     for (int loop = 0; loop < 2; loop ++) {
