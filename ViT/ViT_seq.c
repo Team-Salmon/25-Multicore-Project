@@ -48,7 +48,7 @@ typedef struct __cl_context {
     cl_context     context;
 
     cl_command_queue q_input;
-    cl_command_queue q_transfer;
+    cl_command_queue q_load;
     cl_command_queue q_compute;
     cl_command_queue q_output;
 
@@ -59,7 +59,6 @@ typedef struct __cl_context {
 
     cl_kernel k_linear;
     cl_kernel k_linear_gelu;
-    size_t    lws_linear[2];
 
     cl_kernel k_attn_score;
     cl_kernel k_softmax;
@@ -87,9 +86,7 @@ typedef struct __cl_context {
     cl_mem d_mlp_tmp;
     cl_mem d_enc_tmp;
 
-    cl_event  evt_profile;
-    cl_event* evt_ptr;
-    cl_event evt_transfer[152];
+    cl_event  evt_transfer[152];
 } CLContext;
 
 CLContext ctx = { 0 };
@@ -132,7 +129,7 @@ void multihead_attn(cl_mem input, cl_mem output,
     err = clSetKernelArg(ctx.k_attn_score, 0, sizeof(cl_mem), &ctx.d_qkv);
     err = clSetKernelArg(ctx.k_attn_score, 1, sizeof(cl_mem), &ctx.d_attn_map);
 
-    size_t lws_attn_score[3] = { ctx.lws_linear[0], ctx.lws_linear[1], 1 };
+    size_t lws_attn_score[3] = { li_lws_out, li_lws_token, 1 };
     size_t gws_attn_score[3] = {
         (size_t)(tokens + li_opt - 1) / li_opt,
         (size_t)(tokens + li_tpt - 1) / li_tpt,
@@ -185,9 +182,10 @@ void linear_layer(cl_kernel kernel, cl_mem input, cl_mem output, int token_size,
     err = clSetKernelArg(kernel, 6, sizeof(int), &out_features);
 
     size_t gws[2] = { (out_features + li_opt - 1) / li_opt, (token_size + li_tpt - 1) / li_tpt };
-    padding_size(gws, ctx.lws_linear, 2);
+    size_t lws[2] = { li_lws_out, li_lws_token };
+    padding_size(gws, lws, 2);
 
-    err = clEnqueueNDRangeKernel(ctx.q_compute, kernel, 2, NULL, gws, ctx.lws_linear, 0, NULL, NULL);
+    err = clEnqueueNDRangeKernel(ctx.q_compute, kernel, 2, NULL, gws, lws, 0, NULL, NULL);
 }
 
 void mlp_block(cl_mem input, cl_mem output, cl_mem fc1_weight, cl_mem fc1_bias, cl_mem fc2_weight, cl_mem fc2_bias) {
@@ -246,7 +244,7 @@ void init_kernel(Network* networks) {
     cl_queue_properties props[] = { 0 };
 
     ctx.q_input = clCreateCommandQueueWithProperties(ctx.context, ctx.device, props, &err);
-	ctx.q_transfer = clCreateCommandQueueWithProperties(ctx.context, ctx.device, props, &err);
+	ctx.q_load = clCreateCommandQueueWithProperties(ctx.context, ctx.device, props, &err);
     ctx.q_compute = clCreateCommandQueueWithProperties(ctx.context, ctx.device, props, &err);
 	ctx.q_output = clCreateCommandQueueWithProperties(ctx.context, ctx.device, props, &err);
 
@@ -314,7 +312,7 @@ void init_kernel(Network* networks) {
 
        
 
-        err = clEnqueueWriteBuffer(ctx.q_transfer,
+        err = clEnqueueWriteBuffer(ctx.q_load,
             ctx.d_networks[i],
             CL_FALSE, 0,
             sizeof(float) * networks[i].size,
@@ -365,15 +363,6 @@ void init_kernel(Network* networks) {
 
     ctx.d_logits[0] = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE, sizeof(float) * batch_size * num_classes, NULL, &err);
 	ctx.d_logits[1] = clCreateBuffer(ctx.context, CL_MEM_READ_WRITE, sizeof(float) * batch_size * num_classes, NULL, &err);
-
-    ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-    // Set work sizes
-
-    set_size_2d(ctx.lws_linear, li_lws_out, li_lws_token);
-
-    ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-    ctx.evt_ptr = NULL;
 
     free(kernel_source);
 }
@@ -534,13 +523,14 @@ void ViT_seq(ImageData* image, Network* networks, float** probabilities) {
         size_t gws_softmax = (size_t)current_batch_size * lws_softmax;
 
         err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_softmax, 1, NULL, &gws_softmax, &lws_softmax, 0, NULL, &evt_done[steps]);
+
+        // Read probabilities
+
 		float* probs_ptr = &probs[i * num_classes];
         size_t output_bytes = sizeof(float) * num_classes * current_batch_size;
 
 		clEnqueueBarrierWithWaitList(ctx.q_output, 1, &evt_done[steps], NULL);
 		err = clEnqueueReadBuffer(ctx.q_output, ctx.d_logits[steps], CL_FALSE, 0, output_bytes, probs_ptr, 0, NULL, NULL);
-
-        // break; // for test purpose, process only one batch
     }
 
 	for (int s = 0; s < 2; s++) {
@@ -595,7 +585,7 @@ void release_kernel() {
 
     clReleaseCommandQueue(ctx.q_input);
     clReleaseCommandQueue(ctx.q_compute);
-    clReleaseCommandQueue(ctx.q_transfer);
+    clReleaseCommandQueue(ctx.q_load);
 
     clReleaseContext(ctx.context);
 }
