@@ -138,9 +138,6 @@
     <ClCompile Include="Main.c" />
     <ClCompile Include="Network.c" />
     <ClCompile Include="ViT_seq.c" />
-    <ClCompile Include="ViT_seq_sb.c" />
-    <ClCompile Include="ViT_seq_seoh.c" />
-    <ClCompile Include="ViT_seq_ZZani.c" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="comparator.h" />
@@ -150,9 +147,7 @@
     <ClInclude Include="ViT_seq.h" />
   </ItemGroup>
   <ItemGroup>
-    <None Include="kernel_sb.cl" />
-    <None Include="kernel_seoh.cl" />
-    <None Include="kernel_ZZani.cl" />
+    <None Include="kernel.cl" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

@@ -13,9 +13,6 @@
       <UniqueIdentifier>{67DA6AB6-F800-4c08-8B7A-83BB121AAD01}</UniqueIdentifier>
       <Extensions>rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe;resx;tiff;tif;png;wav;mfcribbon-ms</Extensions>
     </Filter>
-    <Filter Include="소스 파일\Kernel">
-      <UniqueIdentifier>{94c406ff-2548-494a-980d-1c96c285b7c2}</UniqueIdentifier>
-    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Main.c">
@@ -34,15 +31,6 @@
       <Filter>소스 파일</Filter>
     </ClCompile>
     <ClCompile Include="debug.c">
-      <Filter>소스 파일</Filter>
-    </ClCompile>
-    <ClCompile Include="ViT_seq_sb.c">
-      <Filter>소스 파일</Filter>
-    </ClCompile>
-    <ClCompile Include="ViT_seq_seoh.c">
-      <Filter>소스 파일</Filter>
-    </ClCompile>
-    <ClCompile Include="ViT_seq_ZZani.c">
       <Filter>소스 파일</Filter>
     </ClCompile>
   </ItemGroup>
@@ -64,14 +52,8 @@
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
-    <None Include="kernel_sb.cl">
-      <Filter>소스 파일\Kernel</Filter>
-    </None>
-    <None Include="kernel_seoh.cl">
-      <Filter>소스 파일\Kernel</Filter>
-    </None>
-    <None Include="kernel_ZZani.cl">
-      <Filter>소스 파일\Kernel</Filter>
+    <None Include="kernel.cl">
+      <Filter>소스 파일</Filter>
     </None>
   </ItemGroup>
 </Project>

@@ -16,8 +16,4 @@ void build_error(cl_program program, cl_device_id device, cl_int err);
 
 void ViT_seq(ImageData* image, Network* networks, float** prb);
 
-void ViT_seq_sb(ImageData* image, Network* networks, float** prb);
-void ViT_seq_seoh(ImageData* image, Network* networks, float** prb);
-void ViT_seq_ZZani(ImageData* image, Network* networks, float** prb);
-
 #endif#pragma once
