@@ -561,7 +561,7 @@ __kernel void attn_context(
     const int batch_offset = batch * TOKENS;
 
     const int score_bh_offset = bh_idx * TOKENS * TOKENS;
-    const __global float* score_ptr_base = scores + score_bh_offset + g_row * TOKENS;
+    const __global float* p_score_base = scores + score_bh_offset + g_row * TOKENS;
 
     const int qkv_bh_offset = batch_offset * QKV_DIM;
     const int v_offset = (EMBED_DIM << 1) + head_dim_offset + g_dim;
@@ -572,32 +572,32 @@ __kernel void attn_context(
     float4 acc2 = (float4)(0.0f);
     float4 acc3 = (float4)(0.0f);
 
-    const __global float* score_ptr0 = score_ptr_base;
-    const __global float* score_ptr1 = score_ptr_base + TOKENS;
-    const __global float* score_ptr2 = score_ptr_base + (TOKENS << 1);
-    const __global float* score_ptr3 = score_ptr_base + (TOKENS * 3);
+    const __global float* p_score0 = p_score_base;
+    const __global float* p_score1 = p_score_base + TOKENS;
+    const __global float* p_score2 = p_score_base + (TOKENS << 1);
+    const __global float* p_score3 = p_score_base + (TOKENS * 3);
 
-    const bool row1_valid = (g_row + 1 < TOKENS);
-    const bool row2_valid = (g_row + 2 < TOKENS);
-    const bool row3_valid = (g_row + 3 < TOKENS);
+    const bool v_row0 = (g_row + 1 < TOKENS);
+    const bool v_row1 = (g_row + 2 < TOKENS);
+    const bool v_row2 = (g_row + 3 < TOKENS);
 
     for (int token = 0; token < TOKENS; ++token) {
         float4 v_val = vload4(0, v_ptr);
         v_ptr += QKV_DIM;
 
-        float score0 = *score_ptr0++;
+        float score0 = *p_score0++;
         acc0 = fma(v_val, (float4)(score0), acc0);
 
-        if (row1_valid) {
-            float score1 = *score_ptr1++;
+        if (v_row0) {
+            float score1 = *p_score1++;
             acc1 = fma(v_val, (float4)(score1), acc1);
         }
-        if (row2_valid) {
-            float score2 = *score_ptr2++;
+        if (v_row1) {
+            float score2 = *p_score2++;
             acc2 = fma(v_val, (float4)(score2), acc2);
         }
-        if (row3_valid) {
-            float score3 = *score_ptr3++;
+        if (v_row2) {
+            float score3 = *p_score3++;
             acc3 = fma(v_val, (float4)(score3), acc3);
         }
     }
@@ -606,9 +606,9 @@ __kernel void attn_context(
     __global float* p_out = attn_out + out_base;
 
     vstore4(acc0, 0, p_out);
-    if (row1_valid) vstore4(acc1, 0, p_out + EMBED_DIM);
-    if (row2_valid) vstore4(acc2, 0, p_out + (EMBED_DIM << 1));
-    if (row3_valid) vstore4(acc3, 0, p_out + (EMBED_DIM * 3));
+    if (v_row0) vstore4(acc1, 0, p_out + EMBED_DIM);
+    if (v_row1) vstore4(acc2, 0, p_out + (EMBED_DIM << 1));
+    if (v_row2) vstore4(acc3, 0, p_out + (EMBED_DIM * 3));
 }
 
 __kernel void layer_norm(
@@ -651,7 +651,7 @@ __kernel void add(
     const int size) {
 
     int i = get_global_id(0);
-    if (i >= size) return;
+    // if (i >= size) return;
 
     output[i] = a[i] + b[i];
 }
