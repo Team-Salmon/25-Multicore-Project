@@ -611,36 +611,96 @@ __kernel void attn_context(
     if (v_row2) vstore4(acc3, 0, p_out + (EMBED_DIM * 3));
 }
 
+
+
 __kernel void layer_norm(
     __global const float* input,
     __global float* output,
-    __global const float* weight,
-    __constant float* bias) {
+    __constant float* weight,
+    __constant float* bias,
+    const int embed_dim,
+    const float eps
+) {
 
-    int token = get_global_id(0);
-    if (token >= TOTAL_TOKENS) return;
+    int token_idx = get_group_id(0);
+    int lid = get_local_id(0);
 
-    int offset = token * EMBED_DIM;
+    __local float l_cache[1024];
 
-    float sum = 0.0f;
-    float sum_sq = 0.0f;
+    __local float l_sum[LN_LWS];
+    __local float l_sum_sq[LN_LWS];
 
-    for (int i = 0; i < EMBED_DIM; i++) {
-        float val = input[offset + i];
-        sum += val;
-        sum_sq += val * val;
+    int offset = token_idx * embed_dim;
+
+    float4 my_sum = (float4)(0.0f);
+    float4 my_sum_sq = (float4)(0.0f);
+
+    for (int i = lid * 4; i < embed_dim; i += LN_LWS * 4) {
+        float4 val = (float4)(0.0f);
+
+        if (i + 3 < embed_dim) {
+            val = vload4(0, &input[offset + i]);
+        }
+        else {
+            if (i < embed_dim) val.x = input[offset + i];
+            if (i + 1 < embed_dim) val.y = input[offset + i + 1];
+            if (i + 2 < embed_dim) val.z = input[offset + i + 2];
+        }
+
+        if (i < embed_dim) l_cache[i] = val.x;
+        if (i + 1 < embed_dim) l_cache[i + 1] = val.y;
+        if (i + 2 < embed_dim) l_cache[i + 2] = val.z;
+        if (i + 3 < embed_dim) l_cache[i + 3] = val.w;
+
+        my_sum += val;
+        my_sum_sq += val * val;
     }
 
-    const float inv_dim = 1.0f / EMBED_DIM;
+    l_sum[lid] = my_sum.x + my_sum.y + my_sum.z + my_sum.w;
+    l_sum_sq[lid] = my_sum_sq.x + my_sum_sq.y + my_sum_sq.z + my_sum_sq.w;
 
-    float mean = sum * inv_dim;
-    float var = sum_sq * inv_dim - mean * mean;
+    barrier(CLK_LOCAL_MEM_FENCE);
 
-    float inv_std = rsqrt(var + EPS);
 
-    for (int i = 0; i < EMBED_DIM; i++) {
-        float val = input[offset + i];
-        output[offset + i] = (val - mean) * inv_std * weight[i] + bias[i];
+    for (int stride = LN_LWS / 2; stride > 0; stride >>= 1) {
+        if (lid < stride) {
+            l_sum[lid] += l_sum[lid + stride];
+            l_sum_sq[lid] += l_sum_sq[lid + stride];
+        }
+        barrier(CLK_LOCAL_MEM_FENCE);
+    }
+
+    if (lid == 0) {
+        float mean = l_sum[0] / embed_dim;
+        float var = (l_sum_sq[0] / embed_dim) - (mean * mean);
+        float inv_std = rsqrt(max(var, 0.0f) + eps);
+
+        l_sum[0] = mean;
+        l_sum[1] = inv_std;
+    }
+    barrier(CLK_LOCAL_MEM_FENCE);
+
+    float mean = l_sum[0];
+    float inv_std = l_sum[1];
+
+    for (int i = lid * 4; i < embed_dim; i += LN_LWS * 4) {
+        float4 val;
+        val.x = (i < embed_dim) ? l_cache[i] : 0.0f;
+        val.y = (i + 1 < embed_dim) ? l_cache[i + 1] : 0.0f;
+        val.z = (i + 2 < embed_dim) ? l_cache[i + 2] : 0.0f;
+        val.w = (i + 3 < embed_dim) ? l_cache[i + 3] : 0.0f;
+
+        if (i < embed_dim) {
+            float4 w_vec = (float4)(0.0f);
+            float4 b_vec = (float4)(0.0f);
+            if (i + 3 < embed_dim) {
+                w_vec = vload4(0, &weight[i]);
+                b_vec = vload4(0, &bias[i]);
+
+                float4 res = (val - mean) * inv_std * w_vec + b_vec;
+                vstore4(res, 0, &output[offset + i]);
+            }
+        }
     }
 }
 
