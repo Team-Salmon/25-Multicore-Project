@@ -42,6 +42,8 @@
 
 #define enc_size tokens * embed_dim
 
+#define ln_lws 256
+
 typedef struct __cl_context {
     cl_platform_id platform;
     cl_device_id   device;
@@ -113,9 +115,13 @@ void layer_norm(cl_mem input, cl_mem output, cl_mem weight, cl_mem bias) {
     err = clSetKernelArg(ctx.k_layernorm, 2, sizeof(cl_mem), &weight);
     err = clSetKernelArg(ctx.k_layernorm, 3, sizeof(cl_mem), &bias);
 
-    size_t gws_layernorm = (size_t)total_tokens;
-    size_t lws_layernorm = (size_t)2;
-    padding_size(&gws_layernorm, &lws_layernorm, 1);
+    int dim = embed_dim;
+    float epsilon = eps;
+    err = clSetKernelArg(ctx.k_layernorm, 4, sizeof(int), &dim);
+    err = clSetKernelArg(ctx.k_layernorm, 5, sizeof(float), &epsilon);
+
+    size_t lws_layernorm = (size_t)ln_lws;
+    size_t gws_layernorm = (size_t)total_tokens * ln_lws;
 
     err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_layernorm, 1, NULL, &gws_layernorm, &lws_layernorm, 0, NULL, NULL);
 }
@@ -273,7 +279,8 @@ void init_kernel(Network* networks) {
         "-D LI_OPT=%d "
         "-D LI_TILE=%d "
         "-D LI_STRIDE_IN=%d "
-        "-D LI_STRIDE_WEIGHT=%d ",
+        "-D LI_STRIDE_WEIGHT=%d "
+        "-D LN_LWS=%d ",
         batch_size,
         img_size,
         patch_size,
@@ -293,7 +300,8 @@ void init_kernel(Network* networks) {
         li_opt,
         li_tile,
         li_stride_in,
-        li_stride_weight
+        li_stride_weight,
+        ln_lws
     );
 
     err = clBuildProgram(ctx.program, 1, &ctx.device, build_options, NULL, NULL);
