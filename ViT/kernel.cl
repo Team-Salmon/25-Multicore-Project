@@ -611,16 +611,11 @@ __kernel void attn_context(
     if (v_row2) vstore4(acc3, 0, p_out + (EMBED_DIM * 3));
 }
 
-
-
 __kernel void layer_norm(
     __global const float* input,
     __global float* output,
     __constant float* weight,
-    __constant float* bias,
-    const int embed_dim,
-    const float eps
-) {
+    __constant float* bias ) {
 
     int token_idx = get_group_id(0);
     int lid = get_local_id(0);
@@ -630,27 +625,27 @@ __kernel void layer_norm(
     __local float l_sum[LN_LWS];
     __local float l_sum_sq[LN_LWS];
 
-    int offset = token_idx * embed_dim;
+    int offset = token_idx * EMBED_DIM;
 
     float4 my_sum = (float4)(0.0f);
     float4 my_sum_sq = (float4)(0.0f);
 
-    for (int i = lid * 4; i < embed_dim; i += LN_LWS * 4) {
+    for (int i = lid * 4; i < EMBED_DIM; i += LN_LWS * 4) {
         float4 val = (float4)(0.0f);
 
-        if (i + 3 < embed_dim) {
+        if (i + 3 < EMBED_DIM) {
             val = vload4(0, &input[offset + i]);
         }
         else {
-            if (i < embed_dim) val.x = input[offset + i];
-            if (i + 1 < embed_dim) val.y = input[offset + i + 1];
-            if (i + 2 < embed_dim) val.z = input[offset + i + 2];
+            if (i < EMBED_DIM) val.x = input[offset + i];
+            if (i + 1 < EMBED_DIM) val.y = input[offset + i + 1];
+            if (i + 2 < EMBED_DIM) val.z = input[offset + i + 2];
         }
 
-        if (i < embed_dim) l_cache[i] = val.x;
-        if (i + 1 < embed_dim) l_cache[i + 1] = val.y;
-        if (i + 2 < embed_dim) l_cache[i + 2] = val.z;
-        if (i + 3 < embed_dim) l_cache[i + 3] = val.w;
+        if (i < EMBED_DIM) l_cache[i] = val.x;
+        if (i + 1 < EMBED_DIM) l_cache[i + 1] = val.y;
+        if (i + 2 < EMBED_DIM) l_cache[i + 2] = val.z;
+        if (i + 3 < EMBED_DIM) l_cache[i + 3] = val.w;
 
         my_sum += val;
         my_sum_sq += val * val;
@@ -671,9 +666,9 @@ __kernel void layer_norm(
     }
 
     if (lid == 0) {
-        float mean = l_sum[0] / embed_dim;
-        float var = (l_sum_sq[0] / embed_dim) - (mean * mean);
-        float inv_std = rsqrt(max(var, 0.0f) + eps);
+        float mean = l_sum[0] / EMBED_DIM;
+        float var = (l_sum_sq[0] / EMBED_DIM) - (mean * mean);
+        float inv_std = rsqrt(max(var, 0.0f) + EPS);
 
         l_sum[0] = mean;
         l_sum[1] = inv_std;
@@ -683,17 +678,17 @@ __kernel void layer_norm(
     float mean = l_sum[0];
     float inv_std = l_sum[1];
 
-    for (int i = lid * 4; i < embed_dim; i += LN_LWS * 4) {
+    for (int i = lid * 4; i < EMBED_DIM; i += LN_LWS * 4) {
         float4 val;
-        val.x = (i < embed_dim) ? l_cache[i] : 0.0f;
-        val.y = (i + 1 < embed_dim) ? l_cache[i + 1] : 0.0f;
-        val.z = (i + 2 < embed_dim) ? l_cache[i + 2] : 0.0f;
-        val.w = (i + 3 < embed_dim) ? l_cache[i + 3] : 0.0f;
+        val.x = (i < EMBED_DIM) ? l_cache[i] : 0.0f;
+        val.y = (i + 1 < EMBED_DIM) ? l_cache[i + 1] : 0.0f;
+        val.z = (i + 2 < EMBED_DIM) ? l_cache[i + 2] : 0.0f;
+        val.w = (i + 3 < EMBED_DIM) ? l_cache[i + 3] : 0.0f;
 
-        if (i < embed_dim) {
+        if (i < EMBED_DIM) {
             float4 w_vec = (float4)(0.0f);
             float4 b_vec = (float4)(0.0f);
-            if (i + 3 < embed_dim) {
+            if (i + 3 < EMBED_DIM) {
                 w_vec = vload4(0, &weight[i]);
                 b_vec = vload4(0, &bias[i]);
 

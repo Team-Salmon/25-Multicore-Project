@@ -115,11 +115,6 @@ void layer_norm(cl_mem input, cl_mem output, cl_mem weight, cl_mem bias) {
     err = clSetKernelArg(ctx.k_layernorm, 2, sizeof(cl_mem), &weight);
     err = clSetKernelArg(ctx.k_layernorm, 3, sizeof(cl_mem), &bias);
 
-    int dim = embed_dim;
-    float epsilon = eps;
-    err = clSetKernelArg(ctx.k_layernorm, 4, sizeof(int), &dim);
-    err = clSetKernelArg(ctx.k_layernorm, 5, sizeof(float), &epsilon);
-
     size_t lws_layernorm = (size_t)ln_lws;
     size_t gws_layernorm = (size_t)total_tokens * ln_lws;
 
@@ -246,12 +241,10 @@ void init_kernel(Network* networks) {
 
     ctx.context = clCreateContext(NULL, 1, &ctx.device, NULL, NULL, &err);
 
-    cl_queue_properties props[] = { 0 };
-
-    ctx.q_input = clCreateCommandQueueWithProperties(ctx.context, ctx.device, props, &err);
-	ctx.q_load = clCreateCommandQueueWithProperties(ctx.context, ctx.device, props, &err);
-    ctx.q_compute = clCreateCommandQueueWithProperties(ctx.context, ctx.device, props, &err);
-	ctx.q_output = clCreateCommandQueueWithProperties(ctx.context, ctx.device, props, &err);
+    ctx.q_input = clCreateCommandQueueWithProperties(ctx.context, ctx.device, NULL, &err);
+	ctx.q_load = clCreateCommandQueueWithProperties(ctx.context, ctx.device, NULL, &err);
+    ctx.q_compute = clCreateCommandQueueWithProperties(ctx.context, ctx.device, NULL, &err);
+	ctx.q_output = clCreateCommandQueueWithProperties(ctx.context, ctx.device, NULL, &err);
 
     size_t kernel_source_size;
     char* kernel_source = get_source_code("kernel.cl", &kernel_source_size);
