@@ -651,9 +651,10 @@ __kernel void add(
     const int size) {
 
     int i = get_global_id(0);
-    // if (i >= size) return;
+    float4 va = vload4(i, a);
+    float4 vb = vload4(i, b);
 
-    output[i] = a[i] + b[i];
+    vstore4(va + vb, i, output);
 }
 
 __kernel void pos_embedding(
@@ -683,8 +684,8 @@ __kernel void extract_cls(
     int batch = get_global_id(0);
     int dim = get_global_id(1);
 
-    int src_idx = batch * (TOKENS * EMBED_DIM) + dim;
-    int dst_idx = batch * EMBED_DIM + dim;
+    int src = batch * (TOKENS * EMBED_DIM) + dim;
+    int dst = batch * EMBED_DIM + dim;
 
-    output[dst_idx] = input[src_idx];
+    output[dst] = input[src];
 }

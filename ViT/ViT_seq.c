@@ -214,8 +214,7 @@ void add(cl_mem a, cl_mem b, cl_mem output, int size) {
     err = clSetKernelArg(ctx.k_add, 2, sizeof(cl_mem), &output);
     err = clSetKernelArg(ctx.k_add, 3, sizeof(int), &size);
 
-    size_t gws = (size_t)size;
-
+    size_t gws = (size_t)(size >> 2);
     err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_add, 1, NULL, &gws, NULL, 0, NULL, NULL);
 }
 
@@ -364,7 +363,7 @@ void init_kernel(Network* networks) {
     free(kernel_source);
 }
 
-inline void wait_transfer(int index) {
+inline static void wait_transfer(int index) {
     if (ctx.evt_transfer[index] == NULL) return;
 
     cl_int err = clEnqueueBarrierWithWaitList(ctx.q_compute, 1, &ctx.evt_transfer[index], NULL);
