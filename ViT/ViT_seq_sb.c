@@ -43,7 +43,9 @@
 
 #define enc_size tokens * embed_dim
 
-// #define PROFILE_MODE
+#define ALIGN16(x) (((x) + 15) / 16 * 16)
+
+#define PROFILE_MODE
 
 typedef struct __cl_context {
     cl_platform_id platform;
@@ -169,13 +171,12 @@ static void multihead_attn(cl_mem input, cl_mem output,
     err = clSetKernelArg(ctx.k_attn_context, 1, sizeof(cl_mem), &ctx.d_qkv); CHECK_ERROR(err);
     err = clSetKernelArg(ctx.k_attn_context, 2, sizeof(cl_mem), &ctx.d_context_vec); CHECK_ERROR(err);
 
-    size_t lws_context[3] = { 4, 16, 1 };
+    size_t lws_context[3] = { 16, 16, 1 }; 
     size_t gws_context[3] = {
-        (size_t)((tokens + 3) / 4),
-        (size_t)head_dim / 4,
+        (size_t)ALIGN16(head_dim / 4),
+        (size_t)ALIGN16(tokens),
         (size_t)batch_size * num_heads
     };
-    padding_size(gws_context, lws_context, 3);
 
     err = clEnqueueNDRangeKernel(ctx.q_compute, ctx.k_attn_context, 3, NULL, gws_context, lws_context, 0, NULL, ctx.evt_ptr); CHECK_ERROR(err);
 #ifdef PROFILE_MODE
