@@ -577,33 +577,19 @@ __kernel void attn_context(
     int loops = (TOKENS + 15) >> 4; // tile count
 
     for (int t = 0; t < loops; ++t) {
-        int k_start = t << 4;
+        int k = t << 4;
 
-        int score_row = gy;
-        int score_col = k_start + lx;
-        
-        if (score_row < TOKENS && score_col < TOKENS) {
-            l_score[ly][lx] = p_score[score_row * TOKENS + score_col];
-        } else {
-            l_score[ly][lx] = 0.0f;
-        }
+        int v_row = k + ly;
+        int v_col = k + lx;
 
-        int v_row = k_start + ly;
-        int v_col_vec = gx; 
-        
-        if (v_row < TOKENS && (v_col_vec << 2) < HEAD_DIM) {
-            l_v[ly][lx] = vload4(0, p_v + v_row * QKV_DIM + (gx << 2));
-        } else {
-            l_v[ly][lx] = (float4)(0.0f);
-        }
+        l_score[ly][lx] = (gy < TOKENS && v_col < TOKENS) ? p_score[gy * TOKENS + v_col] : 0.0f;
+        l_v[ly][lx] = (v_row < TOKENS && (gx << 2) < HEAD_DIM) ? vload4(0, p_v + v_row * QKV_DIM + (gx << 2)) : (float4)(0.0f);
 
         barrier(CLK_LOCAL_MEM_FENCE);
 
-        #pragma unroll
+#pragma unroll
         for (int k = 0; k < 16; ++k) {
-            float s_val = l_score[ly][k];
-            float4 v_val = l_v[k][lx];
-            acc = fma(v_val, (float4)s_val, acc);
+            acc = fma(l_v[k][lx], (float4)l_score[ly][k], acc);
         }
 
         barrier(CLK_LOCAL_MEM_FENCE);
