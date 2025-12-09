@@ -16,7 +16,7 @@ inline void load_weights (
 
     l_col <<= 2; // float4 load
 
-    #pragma unroll
+#pragma unroll
     for (int loop = 0; loop < 2; loop ++) {
         int col = l_col + (loop << 4);
         int g_col = g_col_base + col;
@@ -86,6 +86,7 @@ inline void gemm (
     int w_base = l_col * LI_OPT;
     int in_base = l_row * LI_TPT;
 
+#pragma unroll
     for (int k = 0; k < LI_TILE; ++k) {
         __local float* w_ptr = &l_weights[k][w_base];
         
