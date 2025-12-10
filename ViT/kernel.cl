@@ -444,107 +444,6 @@ __kernel void attn_score(
     store_score(scores, acc, g_row, g_col, bh_idx);
 }
 
-__kernel void softmax(
-    __global float* scores,
-    const int size) {
-
-    int row = get_group_id(0);
-    int l_idx = get_local_id(0);
-    int row_offset = row * size;
-
-    __local float l_cache[256];
-
-    float thread_max = -INFINITY;
-    int i = l_idx << 2;
-    
-    while (i < size) {
-        if (i + 3 < size) {
-            float4 val = vload4(0, &scores[row_offset + i]);
-            thread_max = fmax(thread_max, val.x);
-            thread_max = fmax(thread_max, val.y);
-            thread_max = fmax(thread_max, val.z);
-            thread_max = fmax(thread_max, val.w);
-        }
-        else {
-            for (int k = 0; k < 4 && (i + k) < size; ++k) {
-                float val = scores[row_offset + i + k];
-                if (val > thread_max) thread_max = val;
-            }
-        }
-        i += 1024;
-    }
-
-    l_cache[l_idx] = thread_max;
-    barrier(CLK_LOCAL_MEM_FENCE);
-
-#pragma unroll
-    for (int stride = 128; stride > 0; stride >>= 1) {
-        if (l_idx < stride) {
-            l_cache[l_idx] = fmax(l_cache[l_idx], l_cache[l_idx + stride]);
-        }
-        barrier(CLK_LOCAL_MEM_FENCE);
-    }
-    float g_max = l_cache[0];
-    barrier(CLK_LOCAL_MEM_FENCE);
-
-    float thread_sum = 0.0f;
-    i = l_idx << 2;
-
-    while (i < size) {
-        if (i + 3 < size) {
-            float4 val = vload4(0, &scores[row_offset + i]);
-
-            val.x = exp(val.x - g_max);
-            val.y = exp(val.y - g_max);
-            val.z = exp(val.z - g_max);
-            val.w = exp(val.w - g_max);
-
-            vstore4(val, 0, &scores[row_offset + i]);
-            thread_sum += (val.x + val.y + val.z + val.w);
-        }
-        else {
-            for (int k = 0; k < 4 && (i + k) < size; ++k) {
-                float val = scores[row_offset + i + k];
-                val = exp(val - g_max);
-                scores[row_offset + i + k] = val;
-                thread_sum += val;
-            }
-        }
-
-        i += 1024;
-    }
-
-    l_cache[l_idx] = thread_sum;
-    barrier(CLK_LOCAL_MEM_FENCE);
-
-#pragma unroll
-    for (int stride = 128; stride > 0; stride >>= 1) {
-        if (l_idx < stride) {
-            l_cache[l_idx] += l_cache[l_idx + stride];
-        }
-        barrier(CLK_LOCAL_MEM_FENCE);
-    }
-
-    float inv_sum = 1.0f / l_cache[0];
-    barrier(CLK_LOCAL_MEM_FENCE);
-
-    i = l_idx << 2;
-
-    while (i < size) {
-        if (i + 3 < size) {
-            float4 val = vload4(0, &scores[row_offset + i]);
-            val *= inv_sum;
-            vstore4(val, 0, &scores[row_offset + i]);
-        }
-        else {
-            for (int k = 0; k < 4 && (i + k) < size; ++k) {
-                scores[row_offset + i + k] *= inv_sum;
-            }
-        }
-        i += 1024;
-    }
-}
-
 __kernel void attn_context(
     __global const float* scores,
     __global const float* QKV,
@@ -612,26 +511,125 @@ __kernel void attn_context(
     if (v_row2) vstore4(acc3, 0, p_out + (EMBED_DIM * 3));
 }
 
+__kernel void softmax(
+    __global float* scores,
+    const int size) {
+
+    int group_idx = get_group_id(0);
+    int l_id = get_local_id(0);
+    int offset = group_idx * size;
+
+    __local float l_data[256];
+
+    float acc_max = -INFINITY;
+    int i = l_id << 2;
+    
+    while (i < size) {
+        if (i + 3 < size) {
+            float4 val = vload4(0, &scores[offset + i]);
+            acc_max = fmax(acc_max, val.x);
+            acc_max = fmax(acc_max, val.y);
+            acc_max = fmax(acc_max, val.z);
+            acc_max = fmax(acc_max, val.w);
+        }
+        else {
+            for (int k = 0; k < 4 && (i + k) < size; ++k) {
+                float val = scores[offset + i + k];
+                if (val > acc_max) acc_max = val;
+            }
+        }
+        i += 1024;
+    }
+
+    l_data[l_id] = acc_max;
+    barrier(CLK_LOCAL_MEM_FENCE);
+
+#pragma unroll
+    for (int stride = 128; stride > 0; stride >>= 1) {
+        if (l_id < stride) {
+            l_data[l_id] = fmax(l_data[l_id], l_data[l_id + stride]);
+        }
+        barrier(CLK_LOCAL_MEM_FENCE);
+    }
+    float shared_max = l_data[0];
+    barrier(CLK_LOCAL_MEM_FENCE);
+
+    float acc_sum = 0.0f;
+    i = l_id << 2;
+
+    while (i < size) {
+        if (i + 3 < size) {
+            float4 val = vload4(0, &scores[offset + i]);
+            val.x = exp(val.x - shared_max);
+            val.y = exp(val.y - shared_max);
+            val.z = exp(val.z - shared_max);
+            val.w = exp(val.w - shared_max);
+            
+            vstore4(val, 0, &scores[offset + i]);
+            acc_sum += (val.x + val.y + val.z + val.w);
+        }
+        else {
+            for (int k = 0; k < 4 && (i + k) < size; ++k) {
+                float val = scores[offset + i + k];
+                val = exp(val - shared_max);
+                scores[offset + i + k] = val;
+                acc_sum += val;
+            }
+        }
+        i += 1024;
+    }
+
+    l_data[l_id] = acc_sum;
+    barrier(CLK_LOCAL_MEM_FENCE);
+
+#pragma unroll
+    for (int stride = 128; stride > 0; stride >>= 1) {
+        if (l_id < stride) {
+            l_data[l_id] += l_data[l_id + stride];
+        }
+        barrier(CLK_LOCAL_MEM_FENCE);
+    }
+
+    float inv_sum = 1.0f / l_data[0];
+    barrier(CLK_LOCAL_MEM_FENCE);
+
+    i = l_id << 2;
+
+    while (i < size) {
+        if (i + 3 < size) {
+            float4 val = vload4(0, &scores[offset + i]);
+            val *= inv_sum;
+            vstore4(val, 0, &scores[offset + i]);
+        }
+        else {
+            for (int k = 0; k < 4 && (i + k) < size; ++k) {
+                scores[offset + i + k] *= inv_sum;
+            }
+        }
+        i += 1024;
+    }
+}
+
 __kernel void layer_norm(
     __global const float* input,
     __global float* output,
     __constant float* weight,
     __constant float* bias ) {
 
-    int token_idx = get_group_id(0);
-    int lid = get_local_id(0);
+    int group_idx = get_group_id(0);
+    int l_id = get_local_id(0);
 
-    __local float l_cache[1024];
+    __local float l_data[1024];
 
-    __local float l_sum[LN_LWS];
-    __local float l_sum_sq[LN_LWS];
+    __local float l_reduc_sum[LN_LWS];
+    __local float l_reduc_sq[LN_LWS];
 
-    int offset = token_idx * EMBED_DIM;
+    int offset = group_idx * EMBED_DIM;
+    
+    float4 acc_sum = (float4)(0.0f);
+    float4 acc_sq = (float4)(0.0f);
 
-    float4 my_sum = (float4)(0.0f);
-    float4 my_sum_sq = (float4)(0.0f);
-
-    for (int i = lid * 4; i < EMBED_DIM; i += LN_LWS * 4) {
+    for (int i = l_id * 4; i < EMBED_DIM; i += LN_LWS * 4) {
         float4 val = (float4)(0.0f);
 
         if (i + 3 < EMBED_DIM) {
@@ -643,52 +641,52 @@ __kernel void layer_norm(
             if (i + 2 < EMBED_DIM) val.z = input[offset + i + 2];
         }
 
-        if (i < EMBED_DIM) l_cache[i] = val.x;
-        if (i + 1 < EMBED_DIM) l_cache[i + 1] = val.y;
-        if (i + 2 < EMBED_DIM) l_cache[i + 2] = val.z;
-        if (i + 3 < EMBED_DIM) l_cache[i + 3] = val.w;
+        if (i < EMBED_DIM) l_data[i] = val.x;
+        if (i + 1 < EMBED_DIM) l_data[i + 1] = val.y;
+        if (i + 2 < EMBED_DIM) l_data[i + 2] = val.z;
+        if (i + 3 < EMBED_DIM) l_data[i + 3] = val.w;
 
-        my_sum += val;
-        my_sum_sq += val * val;
+        acc_sum += val;
+        acc_sq += val * val;
     }
 
-    l_sum[lid] = my_sum.x + my_sum.y + my_sum.z + my_sum.w;
-    l_sum_sq[lid] = my_sum_sq.x + my_sum_sq.y + my_sum_sq.z + my_sum_sq.w;
+    l_reduc_sum[l_id] = acc_sum.x + acc_sum.y + acc_sum.z + acc_sum.w;
+    l_reduc_sq[l_id] = acc_sq.x + acc_sq.y + acc_sq.z + acc_sq.w;
 
     barrier(CLK_LOCAL_MEM_FENCE);
 
-
     for (int stride = LN_LWS / 2; stride > 0; stride >>= 1) {
-        if (lid < stride) {
-            l_sum[lid] += l_sum[lid + stride];
-            l_sum_sq[lid] += l_sum_sq[lid + stride];
+        if (l_id < stride) {
+            l_reduc_sum[l_id] += l_reduc_sum[l_id + stride];
+            l_reduc_sq[l_id] += l_reduc_sq[l_id + stride];
         }
         barrier(CLK_LOCAL_MEM_FENCE);
     }
 
-    if (lid == 0) {
-        float mean = l_sum[0] / EMBED_DIM;
-        float var = (l_sum_sq[0] / EMBED_DIM) - (mean * mean);
+    if (l_id == 0) {
+        float mean = l_reduc_sum[0] / EMBED_DIM;
+        float var = (l_reduc_sq[0] / EMBED_DIM) - (mean * mean);
         float inv_std = rsqrt(max(var, 0.0f) + EPS);
 
-        l_sum[0] = mean;
-        l_sum[1] = inv_std;
+        l_reduc_sum[0] = mean;
+        l_reduc_sum[1] = inv_std;
     }
     barrier(CLK_LOCAL_MEM_FENCE);
 
-    float mean = l_sum[0];
-    float inv_std = l_sum[1];
+    float mean = l_reduc_sum[0];
+    float inv_std = l_reduc_sum[1];
 
-    for (int i = lid * 4; i < EMBED_DIM; i += LN_LWS * 4) {
+    for (int i = l_id * 4; i < EMBED_DIM; i += LN_LWS * 4) {
         float4 val;
-        val.x = (i < EMBED_DIM) ? l_cache[i] : 0.0f;
-        val.y = (i + 1 < EMBED_DIM) ? l_cache[i + 1] : 0.0f;
-        val.z = (i + 2 < EMBED_DIM) ? l_cache[i + 2] : 0.0f;
-        val.w = (i + 3 < EMBED_DIM) ? l_cache[i + 3] : 0.0f;
+        val.x = (i < EMBED_DIM) ? l_data[i] : 0.0f;
+        val.y = (i + 1 < EMBED_DIM) ? l_data[i + 1] : 0.0f;
+        val.z = (i + 2 < EMBED_DIM) ? l_data[i + 2] : 0.0f;
+        val.w = (i + 3 < EMBED_DIM) ? l_data[i + 3] : 0.0f;
 
         if (i < EMBED_DIM) {
             float4 w_vec = (float4)(0.0f);
             float4 b_vec = (float4)(0.0f);
+            
             if (i + 3 < EMBED_DIM) {
                 w_vec = vload4(0, &weight[i]);
                 b_vec = vload4(0, &bias[i]);
