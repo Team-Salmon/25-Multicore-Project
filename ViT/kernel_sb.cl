@@ -453,51 +453,101 @@ __kernel void softmax(
 
     int offset = grp_id * size;
 
-    __local float l_cache[1024]; 
-    __local float l_reduce[256]; 
+    __local float l_data[1024];
+    __local float l_scratch[256];
 
     float my_max = -INFINITY;
+
+    int i = loc_id * 4;
     
-    for (int i = loc_id; i < size; i += loc_size) {
-        float val = scores[offset + i];
-        l_cache[i] = val;
-        my_max = fmax(my_max, val);
+    while (i < size) {
+        float4 val;
+        if (i + 3 < size) {
+            val = vload4(0, &scores[offset + i]);
+            
+            vstore4(val, 0, &l_data[i]);
+
+            my_max = fmax(my_max, val.x);
+            my_max = fmax(my_max, val.y);
+            my_max = fmax(my_max, val.z);
+            my_max = fmax(my_max, val.w);
+        }
+        else {
+            for (int k = 0; k < 4 && (i + k) < size; ++k) {
+                float s_val = scores[offset + i + k];
+                l_data[i + k] = s_val;
+                if (s_val > my_max) my_max = s_val;
+            }
+        }
+        i += loc_size * 4;
     }
-    
-    l_reduce[loc_id] = my_max;
+
+    l_scratch[loc_id] = my_max;
     barrier(CLK_LOCAL_MEM_FENCE);
 
     for (int stride = loc_size >> 1; stride > 0; stride >>= 1) {
         if (loc_id < stride) {
-            l_reduce[loc_id] = fmax(l_reduce[loc_id], l_reduce[loc_id + stride]);
+            l_scratch[loc_id] = fmax(l_scratch[loc_id], l_scratch[loc_id + stride]);
         }
         barrier(CLK_LOCAL_MEM_FENCE);
     }
-    float max_val = l_reduce[0];
+    float g_max = l_scratch[0];
     barrier(CLK_LOCAL_MEM_FENCE);
 
     float my_sum = 0.0f;
+    i = loc_id * 4;
 
-    for (int i = loc_id; i < size; i += loc_size) {
-        float val = exp(l_cache[i] - max_val);
-        l_cache[i] = val; 
-        my_sum += val;
+    while (i < size) {
+        if (i + 3 < size) {
+            float4 val = vload4(0, &l_data[i]);
+            
+            // Exp 계산
+            val.x = exp(val.x - g_max);
+            val.y = exp(val.y - g_max);
+            val.z = exp(val.z - g_max);
+            val.w = exp(val.w - g_max);
+
+            vstore4(val, 0, &l_data[i]);
+
+            my_sum += (val.x + val.y + val.z + val.w);
+        }
+        else {
+            for (int k = 0; k < 4 && (i + k) < size; ++k) {
+                float val = l_data[i + k];
+                val = exp(val - g_max);
+                l_data[i + k] = val;
+                my_sum += val;
+            }
+        }
+        i += loc_size * 4;
     }
 
-    l_reduce[loc_id] = my_sum;
+    l_scratch[loc_id] = my_sum;
     barrier(CLK_LOCAL_MEM_FENCE);
 
     for (int stride = loc_size >> 1; stride > 0; stride >>= 1) {
         if (loc_id < stride) {
-            l_reduce[loc_id] += l_reduce[loc_id + stride];
+            l_scratch[loc_id] += l_scratch[loc_id + stride];
         }
         barrier(CLK_LOCAL_MEM_FENCE);
     }
-    float inv_sum = 1.0f / (l_reduce[0] + 1e-6f);
+    float inv_sum = 1.0f / (l_scratch[0] + 1e-6f);
     barrier(CLK_LOCAL_MEM_FENCE);
 
-    for (int i = loc_id; i < size; i += loc_size) {
-        scores[offset + i] = l_cache[i] * inv_sum;
+    i = loc_id * 4;
+
+    while (i < size) {
+        if (i + 3 < size) {
+            float4 val = vload4(0, &l_data[i]);
+            val *= inv_sum;
+            vstore4(val, 0, &scores[offset + i]);
+        }
+        else {
+            for (int k = 0; k < 4 && (i + k) < size; ++k) {
+                scores[offset + i + k] = l_data[i + k] * inv_sum;
+            }
+        }
+        i += loc_size * 4;
     }
 }
 
